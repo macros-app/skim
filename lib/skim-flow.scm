@@ -66,14 +66,15 @@
 
 ;; Text directly inside the element whose context is `ctx`.
 (define (skim--add-text! st s ctx)
-  (let* ((cs (hash-try-get ctx 'cs))
-         (ws (skim--ws-mode cs))
-         (s (skim--transform-text s cs))
-         (script (hash-try-get ctx 'script))
-         (s (cond ((eq? script 'sup) (skim--script-text s skim--sup-map))
-                  ((eq? script 'sub) (skim--script-text s skim--sub-map))
-                  (else s))))
-    (skim--para-push! st (vector 'text s (hash-try-get ctx 'tstyle) ws))))
+  (let ((cs (hash-try-get ctx 'cs)))
+    (unless (skim--invisible? cs)          ; visibility: hidden text shows nothing
+      (let* ((ws (skim--ws-mode cs))
+             (s (skim--transform-text s cs))
+             (script (hash-try-get ctx 'script))
+             (s (cond ((eq? script 'sup) (skim--script-text s skim--sup-map))
+                      ((eq? script 'sub) (skim--script-text s skim--sub-map))
+                      (else s))))
+        (skim--para-push! st (vector 'text s (hash-try-get ctx 'tstyle) ws))))))
 
 ;; Child context for an element with computed style `cs`.
 (define (skim--child-ctx ctx el cs)
@@ -124,7 +125,8 @@
          (tag (skim--el-tag el))
          (display (skim--style cs "display")))
     (cond
-      ((skim--hidden? cs) #t)
+      ((skim--gone? cs) #t)
+      ((skim--invisible? cs) (skim--walk-invisible el m cs ctx st))
       ((equal? tag "br") (skim--para-push! st (vector 'br)))
       ((equal? tag "wbr") #t)
       ((equal? tag "img") (skim--image el cs ctx st))
@@ -169,6 +171,22 @@
            (else
             (when id (skim--para-push! st (vector 'anchor id)))
             (skim--walk-inline el m cs r cctx st))))))))
+
+;; A visibility: hidden element: its own text is suppressed (see
+;; skim--add-text!), but descendants that set visibility: visible show, so
+;; its content is laid out aside and kept only if any of it is visible.
+(define (skim--walk-invisible el m cs ctx st)
+  (let ((sub (skim--new-st))
+        (cctx (skim--child-ctx ctx el cs)))
+    (skim--walk-kids el m cctx sub)
+    (skim--flush! sub cctx)
+    (let ((items (skim--st-items sub)))
+      (when (let any ((xs items))
+              (and (pair? xs)
+                   (or (and (skim--line? (car xs)) (not (equal? (skim--trim (skim--line-text (car xs))) "")))
+                       (any (cdr xs)))))
+        (skim--flush! st ctx)
+        (skim--out-append! st items)))))
 
 ;; Inline element: ::before, kids, ::after into the current paragraph.
 ;; Horizontal margin/padding of 4px or more becomes a breakable space.
@@ -427,6 +445,7 @@
 ;; Lay out `root` → hash: 'lines (list) 'links 'fields 'forms 'title.
 (define (skim--layout root sheet base width field-values)
   (skim--R-reset! base field-values)
+  (set! skim--R (hash-insert skim--R 'doc-text (string-length (skim--squeeze (skim--text-content root)))))
   (let* ((st (skim--new-st))
          (ctx (hash 'width width 'cs skim--root-style 'sheet sheet 'tstyle skim--plain-style))
          (m (skim--mctx root #f #f 1 #t)))

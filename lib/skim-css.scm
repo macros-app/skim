@@ -556,9 +556,17 @@ small, sub, sup { font-size: smaller }
 ;; Is the element hidden for a text renderer? (display:none, visibility,
 ;; the "visually hidden" clip pattern, off-screen positioning, opacity 0.)
 (define (skim--hidden? cs)
+  (or (skim--invisible? cs) (skim--gone? cs)))
+
+;; visibility: hidden — unlike everything in skim--gone?, a descendant can
+;; override it with visibility: visible and show.
+(define (skim--invisible? cs)
+  (if (member (skim--style cs "visibility") '("hidden" "collapse")) #t #f))
+
+;; Hidden for good: nothing inside can come back.
+(define (skim--gone? cs)
   (or (equal? (skim--style cs "display") "none")
       (skim--icon-font? cs)
-      (member (skim--style cs "visibility") '("hidden" "collapse"))
       (member (skim--style cs "opacity") '("0" "0.0" "0%"))
       (let ((pos (skim--style cs "position")))
         (and (member pos '("absolute" "fixed"))

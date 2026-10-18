@@ -42,21 +42,28 @@
           (vector-set! el 5 (cons skim--gen r))
           r))))
 
-;; A script-revealed element (see skim--script-revealed?) is made visible
-;; here, so its descendants inherit `visibility: visible` too. Only real
-;; content qualifies: tiny hover affordances (a "#" permalink, an icon
-;; button) also fade in with a transition, but on :hover, not by script.
+;; Content hidden only until a script shows it is made visible here (so its
+;; descendants inherit `visibility: visible` too), since skim runs no
+;; script. Two shapes of it:
+;;   * fade-in content: an opacity/visibility transition (skim--script-
+;;     revealed?) on real content — tiny hover affordances (a "#" permalink,
+;;     an icon button) fade in too, but on :hover, so ≥ 20 chars of text;
+;;   * a curtain: one hidden box holding at least half the page's text,
+;;     uncovered once fonts/scripts load. Menus and dialogs are a small
+;;     share of a page, so they stay hidden.
 (define (skim--reveal el r)
   (let ((cs (car r)))
-    (if (and (skim--script-revealed? cs)
-             (>= (string-length (skim--squeeze (skim--text-content el))) 20)
-             (or (member (skim--style cs "visibility") '("hidden" "collapse"))
+    (if (not (or (member (skim--style cs "visibility") '("hidden" "collapse"))
                  (member (skim--style cs "opacity") '("0" "0.0" "0%"))))
-        (cons (vector (hash-insert (vector-ref cs 0) "visibility" "visible")
-                      (hash-insert (vector-ref cs 1) "opacity" "1")
-                      (vector-ref cs 2))
-              (cdr r))
-        r)))
+        r
+        (let ((len (string-length (skim--squeeze (skim--text-content el)))))
+          (if (or (and (skim--script-revealed? cs) (>= len 20))
+                  (and (>= len 200) (>= (* 2 len) (or (skim--Rget 'doc-text) 0))))
+              (cons (vector (hash-insert (vector-ref cs 0) "visibility" "visible")
+                            (hash-insert (vector-ref cs 1) "opacity" "1")
+                            (vector-ref cs 2))
+                    (cdr r))
+              r)))))
 
 ;; Computed style of element `el` (match context `m`) inside flow `ctx`.
 (define (skim--style-of el m ctx)
@@ -178,7 +185,8 @@
 ;; A line back into paragraph text items, one per run of identical styling.
 (define (skim--line->items l)
   (let* ((t (skim--line-text l)) (n (string-length t)) (spans (skim--line-spans l))
-         (cuts (sort (skim--dedupe (append (list 0 n) (map car spans) (map cadr spans))) <))
+         (cuts (sort (skim--dedupe (map (lambda (c) (max 0 (min n c)))        ; spans may overhang
+                                         (append (list 0 n) (map car spans) (map cadr spans)))) <))
          (style-at (lambda (pos kind)
                      (let loop ((ss spans))
                        (cond ((null? ss) #f)
