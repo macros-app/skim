@@ -401,7 +401,7 @@
                       (sp (if pending (string-length (car pending)) 0)))
                  (cond
                    ((null? line)
-                    (if (> len width)
+                    (if (and (> len width) (not skim--no-chop))
                         (let* ((chunks (skim--chop-pieces pieces width))
                                (out (let add ((cs chunks) (out out) (anchors anchors))
                                       (if (null? (cdr cs))
@@ -870,6 +870,10 @@
                                     'normal)))
       ((and link (not icon?))
        (skim--para-push! st (vector 'atom "[img]" (vector (skim--fg-face (skim--pal 'link) #f #f) #f link #f))))
+      ;; An image we don't draw still occupies its declared width, as in a
+      ;; browser — this is how spacer GIFs indent (e.g. threaded comments).
+      ((and w (>= w 4))
+       (skim--para-push! st (vector 'atom (skim--spaces (min 80 (skim--int (/ (+ w 4) 8)))) skim--plain-style)))
       (else #t))))
 
 (define (skim--resolve-image-url src)
@@ -1081,8 +1085,23 @@
         (vector (min 30 (skim--longest-word text)) (max 30 avail) #f)
         (let* ((lines (skim--cell-lines el (vector-ref c 2) (vector-ref c 1) ctx 1000))
                (mx (skim--lines-width lines))
-               (mn (min 24 (max (skim--longest-word text) (if (> mx 0) 1 0)))))
+               ;; exact min-content for short cells (spacers, icons, numbers);
+               ;; long text cells are wide anyway, so their longest word does
+               (mn (if (< (string-length text) 200)
+                       (min 40 (skim--min-content el (vector-ref c 2) (vector-ref c 1) ctx))
+                       (min 24 (max (skim--longest-word text) 1)))))
           (vector (min mn mx) mx lines)))))
+
+;; CSS min-content width: lay the cell out with every unbreakable unit (word,
+;; image, spacer, form control) on a line of its own — no hard-splitting —
+;; and take the widest. Width 0 keys this pass apart in the cell cache.
+(define skim--no-chop #f)
+(define (skim--min-content el m cs ctx)
+  (let ((saved skim--no-chop))
+    (set! skim--no-chop #t)
+    (let ((w (skim--lines-width (skim--cell-lines el m cs ctx 0))))
+      (set! skim--no-chop saved)
+      w)))
 
 ;; Distribute `avail` columns over `ncols` from per-cell min/max widths.
 (define (skim--column-widths pairs ncols avail)
