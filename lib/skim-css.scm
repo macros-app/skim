@@ -28,7 +28,8 @@
         "padding-top" #t "padding-bottom" #t "padding-left" #t "background-color" #t
         "content" #t "position" #t "clip" #t "clip-path" #t "width" #t "height" #t
         "overflow" #t "flex-direction" #t "opacity" #t "left" #t "top" #t "font-size" #t
-        "max-width" #t "margin-right" #t "padding-right" #t "float" #t))
+        "max-width" #t "margin-right" #t "padding-right" #t "float" #t
+        "transition" #t "transition-property" #t "animation" #t "animation-name" #t))
 
 (define skim--prop-defaults
   (hash "display" "inline" "visibility" "visible" "font-weight" "normal"
@@ -39,7 +40,8 @@
         "padding-left" "0" "color" "" "background-color" "" "content" ""
         "position" "static" "clip" "" "clip-path" "" "width" "" "height" ""
         "overflow" "visible" "flex-direction" "row" "opacity" "1" "left" "" "top" ""
-        "font-size" "" "max-width" "" "margin-right" "0" "padding-right" "0" "float" "none"))
+        "font-size" "" "max-width" "" "margin-right" "0" "padding-right" "0" "float" "none"
+        "transition" "" "transition-property" "" "animation" "" "animation-name" ""))
 
 ;; ── declarations ────────────────────────────────────────────────────────────
 ;; The four sides of a margin/padding shorthand → (top right bottom left).
@@ -783,6 +785,17 @@ small, sub, sup { font-size: smaller }
                                 (if (= cp 10) " " (skim--codepoint->string cp))))
                           acc)))))))
 
+;; Content in normal flow that starts invisible but transitions/animates its
+;; opacity or visibility is waiting for a script to reveal it (fade-in on
+;; scroll, slide decks). skim runs no script, so it shows such content.
+;; Positioned boxes (dropdowns, popovers) stay hidden.
+(define (skim--script-revealed? cs)
+  (and (member (skim--style cs "position") '("static" "relative" "sticky" ""))
+       (let ((tr (string-append (skim--style cs "transition") " " (skim--style cs "transition-property")))
+             (an (string-append (skim--style cs "animation") " " (skim--style cs "animation-name"))))
+         (or (string-contains? tr "opacity") (string-contains? tr "visibility") (string-contains? tr "all")
+             (and (not (equal? (skim--trim an) "")) (not (equal? (skim--trim an) "none")))))))
+
 ;; ── style predicates used by layout ─────────────────────────────────────────
 (define (skim--bold? cs)
   (let ((w (skim--style cs "font-weight")))
@@ -804,8 +817,9 @@ small, sub, sup { font-size: smaller }
 ;; the "visually hidden" clip pattern, off-screen positioning, opacity 0.)
 (define (skim--hidden? cs)
   (or (equal? (skim--style cs "display") "none")
-      (member (skim--style cs "visibility") '("hidden" "collapse"))
-      (equal? (skim--style cs "opacity") "0")
+      (and (or (member (skim--style cs "visibility") '("hidden" "collapse"))
+               (member (skim--style cs "opacity") '("0" "0.0" "0%")))
+           (not (skim--script-revealed? cs)))
       (let ((pos (skim--style cs "position")))
         (and (member pos '("absolute" "fixed"))
              (or (string-contains? (skim--style cs "clip") "rect(0")

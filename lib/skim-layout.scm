@@ -110,9 +110,22 @@
   (let ((c (vector-ref el 5)))
     (if (and c (= (car c) skim--gen))
         (cdr c)
-        (let ((r (skim--compute el m parent-cs sheet)))
+        (let ((r (skim--reveal (skim--compute el m parent-cs sheet))))
           (vector-set! el 5 (cons skim--gen r))
           r))))
+
+;; A script-revealed element (see skim--script-revealed?) is made visible
+;; here, so its descendants inherit `visibility: visible` too.
+(define (skim--reveal r)
+  (let ((cs (car r)))
+    (if (and (skim--script-revealed? cs)
+             (or (member (skim--style cs "visibility") '("hidden" "collapse"))
+                 (member (skim--style cs "opacity") '("0" "0.0" "0%"))))
+        (cons (vector (hash-insert (vector-ref cs 0) "visibility" "visible")
+                      (hash-insert (vector-ref cs 1) "opacity" "1")
+                      (vector-ref cs 2))
+              (cdr r))
+        r)))
 (define (skim--Rget key) (hash-try-get skim--R key))
 
 (define (skim--add-link url)
@@ -735,7 +748,7 @@
        (let* ((scale (skim--heading-scale tag))
               (marker (and list-item? (skim--list-marker el cs ctx)))
               (quote? (equal? tag "blockquote"))
-              (summary? (equal? tag "summary"))
+              (summary? (and (equal? tag "summary") (not (equal? (skim--style cs "list-style-type") "none"))))
               (pw (cond (marker (string-length marker)) (quote? 2) (summary? 2) (else 0)))
               (inner (max 8 (skim--int (/ (- w pw) scale))))
               (sub (skim--new-st))
