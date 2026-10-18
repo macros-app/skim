@@ -44,11 +44,24 @@
 ;;   "skim-user-agent"       User-Agent header
 ;;   "skim-heading-scale"    "on"/"off" larger h1–h3 lines (default on)
 
-;; Steel compiles each loaded file as a unit, so the entry file only loads the
-;; pieces in dependency order — each `load` runs before the next compiles.
+;; Steel compiles each loaded file as a unit and a file can only name what
+;; earlier files defined, so the pieces load in dependency order:
+;;
+;;   util       strings, entities, URLs, colours
+;;   html       HTML → DOM
+;;   selectors  CSS selector parsing and matching
+;;   css        stylesheets, @media, the cascade
+;;   style      palette, faces, options, run styles
+;;   text       lines, paragraphs, word wrapping
+;;   replaced   rules, media, images, form controls
+;;   flow       the layout walk (blocks, inline, floats, lists)
+;;   tables     table layout (reached from flow through skim--table-impl)
+;;   state      browser state and settings
+;;   net        responses, fetch pools, image cache, downloads
+;;   page       loading pages and stylesheets, painting *skim*
+;;   commands   links, forms, history, bookmarks, the ? menu
+;;   keys       keymaps and command registration
 (define skim--dir *package-directory*)
-(load (path-join skim--dir "lib/skim-util.scm"))
-(load (path-join skim--dir "lib/skim-html.scm"))
-(load (path-join skim--dir "lib/skim-css.scm"))
-(load (path-join skim--dir "lib/skim-layout.scm"))
-(load (path-join skim--dir "lib/skim-main.scm"))
+(for-each (lambda (piece) (load (path-join skim--dir (string-append "lib/skim-" piece ".scm"))))
+          '("util" "html" "selectors" "css" "style" "text" "replaced" "flow" "tables"
+            "state" "net" "page" "commands" "keys"))

@@ -10,20 +10,19 @@
 ;;      implied-end-tag rules that matter for rendering (p, li, dt/dd, table
 ;;      parts, option, headings, nested a).
 ;;
-;; DOM nodes are `skim-el` structs; text nodes are plain (entity-decoded)
-;; strings.
+;; Text nodes are plain (entity-decoded) strings; elements are tagged
+;; vectors (see skim--el).
 
-;; An element is #('skim-el tag attrs kids id): tag a lowercase string, attrs an
-;; alist, kids a list. (Tagged vectors rather than a struct so reloading the
-;; package in a running editor never mixes two struct types.)
-;; Slot 4 is a unique id; slots 5–6 are per-render caches (computed style,
-;; rendered table-cell lines) stamped with the render generation.
+;; An element is #('skim-el tag attrs kids id style-cache cell-cache): tag a
+;; lowercase string, attrs an alist, kids a list, id unique; the two caches
+;; are per-render (see skim--compute-cached / skim--cell-lines), stamped with
+;; the render generation. Tagged vectors rather than a struct so reloading
+;; the package in a running editor never mixes two struct types.
 (define skim--el-counter 0)
 (define (skim--el tag attrs kids)
   (set! skim--el-counter (+ skim--el-counter 1))
   (mutable-vector 'skim-el tag attrs kids skim--el-counter #f #f))
 (define (skim--el? x) (and (vector? x) (= (vector-length x) 7) (eq? (vector-ref x 0) 'skim-el)))
-(define (skim--el-id e) (vector-ref e 4))
 (define (skim--el-tag e) (vector-ref e 1))
 (define (skim--el-attrs e) (vector-ref e 2))
 (define (skim--el-kids e) (vector-ref e 3))
@@ -60,7 +59,6 @@
 (define skim--scope-table (hash "table" #t "html" #t "template" #t))
 (define skim--scope-row (hash "tr" #t "table" #t "html" #t "template" #t))
 (define skim--scope-select (hash "select" #t "datalist" #t "html" #t))
-(define skim--scope-none (hash "html" #t))
 
 (define skim--table-tags (hash "td" #t "th" #t "tr" #t "tbody" #t "thead" #t "tfoot" #t
                                "table" #t "caption" #t "colgroup" #t "col" #t))
@@ -134,8 +132,6 @@
                              (k (skim--lower (car kv)))
                              (v (if (null? (cdr kv)) "" (skim--entities (cadr kv)))))
                         (if (assoc k acc) acc (cons (cons k v) acc)))))))))
-
-(define (skim--parse-attrs s) (car (skim--parse-attrs-batch (list s))))
 
 ;; ── tree building ───────────────────────────────────────────────────────────
 ;; The stack holds mutable frames #(tag attrs kids-reversed); closing a frame

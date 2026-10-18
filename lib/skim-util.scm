@@ -4,20 +4,26 @@
 ;; a name says bytes; regex results are only ever used as captured STRINGS or
 ;; via sentinel-split, never as byte offsets into char-indexed strings.
 
-;; ── sentinels ───────────────────────────────────────────────────────────────
+;; ── sentinels and strings ──────────────────────────────────────────────
 ;; Control characters that never survive into rendered text (the tokenizer
 ;; strips them from input first), used to fence regex matches so a native
 ;; `split-many` can cut a big string in one call.
 (define skim--S1 (string (integer->char 1)))
+
 (define skim--S2 (string (integer->char 2)))
+
 (define skim--S3 (string (integer->char 3)))
+
 (define skim--S4 (string (integer->char 4)))
+
 (define skim--nbsp (string (integer->char 160)))
 
-;; ── strings ─────────────────────────────────────────────────────────────────
 (define (skim--trim s) (replace-regexp-in-string "^[ \\t\\r\\n\\f]+|[ \\t\\r\\n\\f]+$" "" s))
+
 (define (skim--lower s) (string-downcase s))
+
 (define (skim--bytelen s) (bytes-length (string->bytes s)))
+
 (define (skim--spaces n) (if (<= n 0) "" (make-string n #\space)))
 
 ;; `s` repeated `n` times (multi-char strings such as "─").
@@ -36,10 +42,6 @@
   (let loop ((xs xs) (n n) (acc '()))
     (if (or (<= n 0) (null? xs)) (reverse acc) (loop (cdr xs) (- n 1) (cons (car xs) acc)))))
 
-(define (skim--index-of x xs)
-  (let loop ((xs xs) (i 0))
-    (cond ((null? xs) #f) ((equal? (car xs) x) i) (else (loop (cdr xs) (+ i 1))))))
-
 ;; Pad `s` on the right to `w` chars (never truncates).
 (define (skim--pad-right s w) (string-append s (skim--spaces (- w (string-length s)))))
 
@@ -51,7 +53,18 @@
 
 (define (skim--int x) (inexact->exact (floor x)))
 
-;; ── entities ────────────────────────────────────────────────────────────────
+;; `xs` without repeats, first occurrence kept (strings or numbers).
+(define (skim--dedupe xs)
+  (let loop ((xs xs) (seen (hash)) (acc '()))
+    (cond ((null? xs) (reverse acc))
+          ((hash-contains? seen (car xs)) (loop (cdr xs) seen acc))
+          (else (loop (cdr xs) (hash-insert seen (car xs) #t) (cons (car xs) acc))))))
+
+;; Number of leading spaces in `s`.
+(define (skim--lead-spaces s)
+  (- (string-length s) (string-length (replace-regexp-in-string "^ +" "" s))))
+
+;; ── entities ───────────────────────────────────────────────────────────
 (define skim--entity-table
   (let loop ((xs
               '(("nbsp" . " ") ("amp" . "&") ("lt" . "<") ("gt" . ">") ("quot" . "\"")
@@ -136,7 +149,7 @@
                                             (string-append "&" r ";"))))))
                           acc)))))))
 
-;; ── URLs ────────────────────────────────────────────────────────────────────
+;; ── URLs ───────────────────────────────────────────────────────────────
 ;; (scheme host path query fragment) — scheme lowercased with its colon
 ;; dropped, path "" when absent, query/fragment keep their leading ?/#.
 (define (skim--url-parts url)
@@ -145,12 +158,7 @@
         #f
         (list (skim--lower (nth c 1)) (nth c 3) (nth c 4) (nth c 5) (nth c 6)))))
 
-(define (skim--url-scheme url) (let ((p (skim--url-parts url))) (and p (car p))))
 (define (skim--url-host url) (let ((p (skim--url-parts url))) (if p (skim--lower (cadr p)) "")))
-
-(define (skim--url-origin url)
-  (let ((p (skim--url-parts url)))
-    (if p (string-append (car p) "://" (cadr p)) "")))
 
 (define (skim--strip-fragment url)
   (let ((i (skim--char-index url #\#)))
@@ -227,7 +235,7 @@
                                                  (string-upcase (number->string b 16)))))
                       acc))))))
 
-;; ── colors ──────────────────────────────────────────────────────────────────
+;; ── colors ─────────────────────────────────────────────────────────────
 (define skim--named-colors
   (let loop ((xs '(("black" 0 0 0) ("white" 255 255 255) ("red" 255 0 0) ("green" 0 128 0)
                    ("blue" 0 0 255) ("yellow" 255 255 0) ("orange" 255 165 0) ("purple" 128 0 128)
