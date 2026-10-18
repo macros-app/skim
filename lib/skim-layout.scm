@@ -881,7 +881,10 @@
        (set! skim--R (hash-insert skim--R 'images (+ 1 (skim--Rget 'images))))
        (skim--flush! st ctx)
        (let* ((label (if (equal? alt "") "▣" (string-append "▣ " (skim--truncate alt (max 10 (- (hash-try-get ctx 'width) 2))))))
-              (maxw (skim--int (min (or w 10000) (skim--opt-num "skim-image-max-width" 640))))
+              ;; only a height given (logos, avatars: usually square): cap the
+              ;; width at it — the editor sizes images by width alone
+              (maxw (skim--int (min (or w (and h (< h 200) h) 10000)
+                                    (skim--opt-num "skim-image-max-width" 640))))
               (style (vector (skim--fg-face (if link (skim--pal 'link) (skim--pal 'dim)) #f #f) #f link #f))
               (line (car (skim--wrap (list (vector 'atom label style)) (max 8 (string-length label)) "left"))))
          (skim--out-push! st (skim--meta-put line 'img (cons url maxw)))))
