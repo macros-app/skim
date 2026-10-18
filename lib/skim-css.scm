@@ -854,10 +854,20 @@ small, sub, sup { font-size: smaller }
 (define (skim--underline? cs) (string-contains? (skim--style cs "text-decoration") "underline"))
 (define (skim--strike? cs) (string-contains? (skim--style cs "text-decoration") "line-through"))
 
+;; Icon fonts (Material Icons/Symbols, Font Awesome, …) turn ligature words
+;; like "arrow_drop_down" into glyphs; as text they're noise.
+(define (skim--icon-font? cs)
+  (let ((f (skim--lower (skim--style cs "font-family"))))
+    (or (string-contains? f "material icons") (string-contains? f "material symbols")
+        (string-contains? f "materialicons") (string-contains? f "font awesome")
+        (string-contains? f "fontawesome") (string-contains? f "icomoon")
+        (string-contains? f "glyphicons") (string-contains? f "octicons"))))
+
 ;; Is the element hidden for a text renderer? (display:none, visibility,
 ;; the "visually hidden" clip pattern, off-screen positioning, opacity 0.)
 (define (skim--hidden? cs)
   (or (equal? (skim--style cs "display") "none")
+      (skim--icon-font? cs)
       (member (skim--style cs "visibility") '("hidden" "collapse"))
       (member (skim--style cs "opacity") '("0" "0.0" "0%"))
       (let ((pos (skim--style cs "position")))

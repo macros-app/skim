@@ -454,7 +454,9 @@
                     (else 0)))
          (body (string-join (map car pieces) ""))
          ;; a line of only (non-breaking) spaces — an &nbsp; paragraph — is blank
-         (blank? (equal? (skim--trim (string-replace body skim--nbsp " ")) ""))
+         ;; (only nbsp lines: a spacer image's reserved plain spaces must stay)
+         (blank? (and (string-contains? body skim--nbsp)
+                      (equal? (skim--trim (string-replace body skim--nbsp " ")) "")))
          (pad (if blank? 0 pad))
          (text (if blank? "" (string-append (skim--spaces pad) body))))
     (let loop ((ps (if blank? '() pieces)) (c pad) (fg #f) (bg #f) (lk #f) (fd #f) (spans '()))
@@ -1020,12 +1022,25 @@
                                     (vector (skim--fg-face (if link (skim--pal 'link) (skim--pal 'dim)) #f #f) #f link #f)
                                     'normal)))
       ((and link (not icon?))
-       (skim--para-push! st (vector 'atom "[img]" (vector (skim--fg-face (skim--pal 'link) #f #f) #f link #f))))
+       (skim--para-push! st (vector 'atom (string-append "[" (skim--image-label el src) "]")
+                                    (vector (skim--fg-face (skim--pal 'link) #f #f) #f link #f))))
       ;; An image we don't draw still occupies its declared width, as in a
       ;; browser — this is how spacer GIFs indent (e.g. threaded comments).
       ((and w (>= w 4))
        (skim--para-push! st (vector 'atom (skim--spaces (min 80 (skim--int (/ (+ w 4) 8)))) skim--plain-style)))
       (else #t))))
+
+;; A name for an image with no alt text: its title, an aria-label, else its
+;; file name ("github" from /icons/github.svg), else "img".
+(define (skim--image-label el src)
+  (let ((t (or (skim--attr el "title") (skim--attr el "aria-label"))))
+    (if (and t (not (equal? (skim--trim t) "")))
+        (skim--trim t)
+        (let ((c (and src (not (starts-with? src "data:"))
+                      (regexp-captures "([^/?#]+?)(?:\\.[a-zA-Z0-9]+)?(?:[?#].*)?$" src))))
+          (if (and c (pair? c) (> (string-length (nth c 1)) 1) (< (string-length (nth c 1)) 30))
+              (nth c 1)
+              "img")))))
 
 (define (skim--resolve-image-url src)
   (if (starts-with? src "data:") src (skim--resolve (skim--Rget 'base) src)))
