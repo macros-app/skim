@@ -596,7 +596,12 @@
                                              (not (hash-try-get ctx 'mono))))
                                     #t))))
          (ctx (hash-insert ctx 'mono mono?))
-         (ctx (let ((bg (and (not (hash-contains? skim--block-displays (skim--style cs "display")))
+         ;; backgrounds paint inline boxes only: a block (or display:contents,
+         ;; which has no box) neither paints one nor inherits an ancestor's
+         (block? (or (hash-contains? skim--block-displays (skim--style cs "display"))
+                     (equal? (skim--style cs "display") "contents")))
+         (ctx (if block? (hash-insert (hash-insert ctx 'bg-face #f) 'bg-rgb #f) ctx))
+         (ctx (let ((bg (and (not block?)
                              (skim--opt-bool "skim-css-colors" #t)
                              (skim--parse-color (skim--style cs "background-color")))))
                 (if (and bg
