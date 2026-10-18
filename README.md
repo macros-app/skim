@@ -111,21 +111,30 @@ Bookmarks live in `<config>/skim/bookmarks`; downloaded images in
 
 ## Layout of the code
 
-| file                  | what                                                     |
-|-----------------------|----------------------------------------------------------|
-| `skim.scm`            | entry point: loads the pieces in order                   |
-| `lib/skim-util.scm`   | entities, URL resolution, colours                        |
-| `lib/skim-html.scm`   | tokenizer + tree builder → DOM                           |
-| `lib/skim-css.scm`    | stylesheet parser, selectors, cascade, UA sheet          |
-| `lib/skim-layout.scm` | DOM + CSS → styled lines (blocks, wrap, lists, tables, forms, images) |
-| `lib/skim-main.scm`   | fetching, painting, interaction, history, keymaps        |
+| file                    | what                                                       |
+|-------------------------|------------------------------------------------------------|
+| `skim.scm`              | entry point: loads the pieces below in dependency order    |
+| `lib/skim-util.scm`     | strings, entities, URL resolution, colours                 |
+| `lib/skim-html.scm`     | tokenizer + tree builder → DOM                             |
+| `lib/skim-selectors.scm`| CSS selector parsing, indexing and matching                |
+| `lib/skim-css.scm`      | stylesheets, `@media`, UA sheet, the cascade               |
+| `lib/skim-style.scm`    | palette, faces, options, text run styles                   |
+| `lib/skim-text.scm`     | lines, paragraphs, word wrapping, per-render caches        |
+| `lib/skim-replaced.scm` | rules, embedded media, images, form controls               |
+| `lib/skim-flow.scm`     | the layout walk: blocks, inline, floats, flex rows, lists  |
+| `lib/skim-tables.scm`   | table layout                                               |
+| `lib/skim-state.scm`    | browser state and settings                                 |
+| `lib/skim-net.scm`      | responses, parallel fetch pools, image cache, downloads    |
+| `lib/skim-page.scm`     | loading pages/stylesheets/images, painting `*skim*`        |
+| `lib/skim-commands.scm` | links, forms, history, bookmarks, the `?` menu             |
+| `lib/skim-keys.scm`     | keymaps and command registration                           |
 
 Two Steel performance notes for anyone hacking on it. First, never grow an
 immutable hash that something else (a global, a pair) still references:
 every insert then copies the whole map. The per-render caches live in mutable
 slots on the elements instead. Second, `load` compiles a file before running
-it, so the entry file can't call into siblings it loads; that's why
-`skim.scm` is only a loader.
+it, so a file can only call functions from files loaded before it (the one
+cycle, flow ⇄ tables, goes through the `skim--table-impl` box).
 
 ## License
 
