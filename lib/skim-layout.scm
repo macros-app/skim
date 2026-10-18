@@ -574,8 +574,30 @@
 ;; Text directly inside the element whose context is `ctx`.
 (define (skim--add-text! st s ctx)
   (let* ((cs (hash-try-get ctx 'cs))
-         (ws (skim--ws-mode cs)))
-    (skim--para-push! st (vector 'text (skim--transform-text s cs) (hash-try-get ctx 'tstyle) ws))))
+         (ws (skim--ws-mode cs))
+         (s (skim--transform-text s cs))
+         (script (hash-try-get ctx 'script))
+         (s (cond ((eq? script 'sup) (skim--script-text s skim--sup-map))
+                  ((eq? script 'sub) (skim--script-text s skim--sub-map))
+                  (else s))))
+    (skim--para-push! st (vector 'text s (hash-try-get ctx 'tstyle) ws))))
+
+;; <sup>/<sub> text drawn with Unicode super/subscript characters when every
+;; character has one (footnote numbers, exponents, chemical formulas);
+;; otherwise left as is.
+(define skim--sup-map
+  (hash #\0 "⁰" #\1 "¹" #\2 "²" #\3 "³" #\4 "⁴" #\5 "⁵" #\6 "⁶" #\7 "⁷" #\8 "⁸" #\9 "⁹"
+        #\+ "⁺" #\- "⁻" #\= "⁼" #\( "⁽" #\) "⁾" #\n "ⁿ" #\i "ⁱ" #\space " "))
+(define skim--sub-map
+  (hash #\0 "₀" #\1 "₁" #\2 "₂" #\3 "₃" #\4 "₄" #\5 "₅" #\6 "₆" #\7 "₇" #\8 "₈" #\9 "₉"
+        #\+ "₊" #\- "₋" #\= "₌" #\( "₍" #\) "₎" #\space " "))
+
+(define (skim--script-text s table)
+  (let ((cs (string->list s)))
+    (if (and (pair? cs) (< (length cs) 12)
+             (let loop ((xs cs)) (or (null? xs) (and (hash-contains? table (car xs)) (loop (cdr xs))))))
+        (string-join (map (lambda (c) (hash-try-get table c)) cs) "")
+        s)))
 
 ;; Child context for an element with computed style `cs`.
 (define (skim--child-ctx ctx el cs)
@@ -587,6 +609,9 @@
                   (hash-insert ctx 'link (skim--add-link (skim--resolve (skim--Rget 'base) (skim--attr el "href"))))
                   ctx))
          (ctx (if (hash-contains? skim--headings tag) (hash-insert ctx 'heading tag) ctx))
+         (ctx (cond ((equal? tag "sup") (hash-insert ctx 'script 'sup))
+                    ((equal? tag "sub") (hash-insert ctx 'script 'sub))
+                    (else ctx)))
          (ctx (if (eq? (skim--ws-mode cs) 'pre) (hash-insert ctx 'pre #t) ctx))
          ;; Code styling: inside code-ish elements, or where an inline element
          ;; switches to a monospace font — not a site whose body font is mono.
@@ -633,6 +658,9 @@
       (else
        (let* ((cctx (skim--child-ctx ctx el cs))
               (cctx (if (equal? tag "form") (hash-insert cctx 'form (skim--add-form el)) cctx))
+              ;; a qualifying flex row spaces its items whether it ends up
+              ;; laid out as a block or inline inside an outer flex row
+              (cctx (if (skim--flex-inline? el cs) (hash-insert cctx 'flex-inline #t) cctx))
               (id (or (skim--attr el "id") (and (equal? tag "a") (skim--attr el "name")))))
          (cond
            ((equal? display "contents")
@@ -736,7 +764,7 @@
          (and (pair? kids) (<= (length kids) 16)
               (let loop ((ks kids))
                 (or (null? ks)
-                    (and (< (string-length (skim--trim (skim--text-content (car ks)))) 50)
+                    (and (< (string-length (skim--trim (skim--text-content (car ks)))) 80)
                          (not (skim--find-el (car ks) (lambda (e) (hash-contains? skim--flex-blockers (skim--el-tag e)))))
                          (loop (cdr ks)))))))))
 
