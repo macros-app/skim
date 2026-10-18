@@ -383,7 +383,7 @@
 ;; when it's updated — Steel then updates in place instead of copying.
 (define (skim--sheet-add sheet sel decls origin)
   (let* ((n (hash-try-get sheet 'count))
-         (rule (vector sel n origin (car decls) (cdr decls)))
+         (rule (vector sel n origin (car decls) (cadr decls) (caddr decls)))
          (key (skim--sel-key sel))
          (bucket (cons rule (or (hash-try-get sheet key) '())))
          (pseudo (or (hash-try-get sheet 'pseudo) (if (vector-ref sel 2) #t #f))))
@@ -503,8 +503,15 @@
 
 ;; Add one rule block (comma-separated selectors) to the sheet.
 (define (skim--add-rules sheet prelude decl-text origin)
-  (let ((decls (skim--parse-decls decl-text)))
-    (if (and (null? (car decls)) (null? (cdr decls)))
+  (let* ((parsed (skim--parse-decls decl-text))
+         ;; custom properties become one prebuilt map per rule (pushed as a
+         ;; layer by every matching element — see skim--cascade)
+         (vars (foldl (lambda (d h) (if (starts-with? (car d) "--") (hash-insert h (car d) (cdr d)) h))
+                      (hash) (car parsed)))
+         (decls (list (filter (lambda (d) (not (starts-with? (car d) "--"))) (car parsed))
+                      (cdr parsed)
+                      vars)))
+    (if (and (null? (car parsed)) (null? (cdr parsed)))
         sheet
         (let loop ((sels (skim--split-selectors prelude)) (sheet sheet))
           (if (null? sels)
@@ -579,12 +586,20 @@ small, sub, sup { font-size: smaller }
 ;;   inherited — inherited properties (color, font-weight, …), shared with the
 ;;               parent until an element changes one;
 ;;   own       — non-inherited properties, this element only;
-;;   vars      — custom properties (--x), inherited, kept apart because pages
-;;               define hundreds of them and copying that map for every
-;;               element that sets `color` was the dominant cost.
+;;   vars      — custom properties (--x), inherited, as a chain of layers
+;;               (see skim--var-lookup): pages define thousands of them, and
+;;               copying them per element was the dominant cost.
 ;; Each element's declarations go into small fresh maps first and are merged
 ;; into the parent's maps once, so a shared map is copied at most once.
-(define skim--root-style (vector (hash) (hash) (hash)))
+(define skim--root-style (vector (hash) (hash) '()))
+
+;; Custom properties are a chain of layers (newest first): an element that
+;; declares variables pushes one small map instead of copying the inherited
+;; set, which on design-system pages runs to thousands of entries.
+(define (skim--var-lookup layers name)
+  (if (null? layers)
+      #f
+      (or (hash-try-get (car layers) name) (skim--var-lookup (cdr layers) name))))
 
 (define (skim--style cs prop)
   (let ((v (if (hash-contains? skim--own-props prop)
@@ -674,17 +689,21 @@ small, sub, sup { font-size: smaller }
       (foldl (lambda (k h) (hash-insert h k (hash-try-get delta k))) base (hash-keys->list delta))))
 
 ;; Apply `decls` ((prop . value) …, lowest priority first) over `parent`.
-(define (skim--cascade decls parent)
-  (let ((pinh (vector-ref parent 0)) (pown (vector-ref parent 1)) (pvars (vector-ref parent 2)))
+(define (skim--cascade decls parent . layers)
+  (let* ((pinh (vector-ref parent 0)) (pown (vector-ref parent 1))
+         ;; rules' prebuilt variable maps, lowest priority first → pushed so
+         ;; the highest-priority map is looked up first
+         (pvars (foldl (lambda (l acc) (if (= (hash-length l) 0) acc (cons l acc)))
+                       (vector-ref parent 2) (if (null? layers) '() (car layers)))))
     (let loop ((ds decls) (d (hash)) (own (hash)) (vd (hash)))
       (if (null? ds)
-          (vector (skim--merge pinh d) own (skim--merge pvars vd))
+          (vector (skim--merge pinh d) own (if (= (hash-length vd) 0) pvars (cons vd pvars)))
           (let ((prop (car (car ds))) (val (cdr (car ds))))
             (if (starts-with? prop "--")
                 (loop (cdr ds) d own (hash-insert vd prop val))
                 (let* ((val (if (string-contains? val "var(")
                                 (skim--lower (skim--resolve-vars
-                                              val (lambda (n) (or (hash-try-get vd n) (hash-try-get pvars n))) 0))
+                                              val (lambda (n) (or (hash-try-get vd n) (skim--var-lookup pvars n))) 0))
                                 val))
                        (own? (hash-contains? skim--own-props prop))
                        (val (cond ((equal? val "inherit")
@@ -712,7 +731,8 @@ small, sub, sup { font-size: smaller }
                       (car inline)
                       (apply append (map (lambda (r) (vector-ref r 4)) main))
                       (cdr inline))
-              parent-cs))
+              parent-cs
+              (map (lambda (r) (vector-ref r 5)) main)))
          (pseudos (filter (lambda (r) (vector-ref (vector-ref r 0) 2)) sorted)))
     (list cs
           (skim--pseudo-content pseudos "before" cs)
