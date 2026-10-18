@@ -935,7 +935,9 @@
          (skim--para-push! st (vector 'atom (if (equal? type "radio") (if on? "(•)" "( )") (if on? "[x]" "[ ]"))
                                       (field-style idx)))))
       ((member type '("submit" "reset" "button" "image"))
-       (let* ((label (or (skim--attr el "value") (skim--attr el "alt")
+       (let* ((nonempty (lambda (v) (and v (not (equal? (skim--trim v) "")) v)))
+              (label (or (nonempty (skim--attr el "value")) (nonempty (skim--attr el "alt"))
+                         (nonempty (skim--attr el "aria-label")) (nonempty (skim--attr el "title"))
                          (if (equal? type "reset") "Reset" (if (equal? type "submit") "Submit" "button"))))
               (idx (skim--add-field (hash 'kind (if (equal? type "image") "submit" type) 'name name
                                           'value (or (skim--attr el "value") "") 'form form 'disabled disabled?))))

@@ -1,0 +1,126 @@
+# skim
+
+A text web browser for the [macros](https://github.com/macros-app/macros)
+editor, written entirely in Steel. Think Emacs's `eww`, but it tries much harder
+to render pages the way a real browser lays them out.
+
+- **HTML5-ish parser.** Implied end tags (`<p>`, `<li>`, table parts, …),
+  character references, and `<script>`/`<svg>` stripped. It's built on native
+  regex passes and one `split-many`, so a 400 KB Wikipedia article parses in
+  about 100 ms.
+- **A CSS engine.** The cascade covers a user-agent sheet, `<style>`, linked
+  stylesheets (fetched in the background, then the page re-renders) and
+  `style=""`. It handles type/class/id/attribute selectors, descendant, `>`,
+  `+` and `~` combinators, `:not()`/`:is()`/`:where()`, `:first-child`, and
+  `::before`/`::after` content, with specificity and `!important`. `@media` is
+  evaluated against a nominal viewport, and custom properties work with
+  `var()`.
+- **Layout in character cells.** Block margins become blank lines and left
+  margins/padding become indentation. `max-width` + `margin: auto` gives a
+  centred column, and short `float: left` boxes (vote counts, dates) sit beside
+  the content they float next to. Flex rows of short items stay on one line, and
+  visually hidden content (`display:none`, `.sr-only` clip patterns, off-screen
+  boxes) is skipped.
+- **Text.** Paragraphs are word-wrapped and honour `white-space`. `text-align`,
+  `text-transform`, bold, italic (emphasis color), underline, strike, inline
+  code, and author colours are applied when they have enough contrast against
+  your editor theme.
+- **Lists, tables, headings.** Lists get hanging markers (disc/circle/square,
+  decimal/alpha/roman, `start`, `value`, `reversed`), and blockquotes get a bar.
+  Tables use real column layout with colspan and rowspan: box-drawn when they
+  hold data, borderless when they're page layout. `h1`–`h3` render at a larger
+  line scale.
+- **Images inline.** PNG/JPEG/GIF/WebP are downloaded in the background,
+  cached on disk, and painted under their line. `data:` URIs, `srcset`, and
+  lazy `data-src` are supported.
+- **Forms.** Text fields, textareas, checkboxes, radios, selects and buttons,
+  submitted as GET or POST. Pressing RET on a search box asks for the text and
+  submits.
+- **Browsing.** History with back/forward (cursor restored), `#fragment` jumps,
+  `rel=next/prev`, reader mode, view source, bookmarks, downloads, and opening
+  the page in the system browser.
+
+No JavaScript, by design.
+
+## Install
+
+```scheme
+(package-install-local "~/repos/skim")   ; or package-install with a git URL
+(evil-leader-set "m e" 'skim)             ; optional
+```
+
+## Use
+
+`M-x skim` asks for a URL or search terms (anything that isn't URL-shaped
+goes to the search engine). `M-x skim-browse-url` takes the URL as an argument.
+Press `?` in `*skim*` for a menu of every command.
+
+| key             | evil            | action                                        |
+|-----------------|-----------------|-----------------------------------------------|
+| `RET` / click   | `RET`           | follow link / edit or press the form field    |
+| `TAB` / `S-TAB` | same            | next / previous link or field                 |
+| `l` / `r`       | `H` / `L`       | back / forward                                |
+| `G` / `o`       | `o`             | open a URL or search                          |
+| `e`             | `O`             | edit the current URL                          |
+| `g`             | `r`, `g r`      | reload                                        |
+| `s`             |                 | web search                                    |
+| `n` / `p`       | `] ]` / `[ [`   | `rel=next` / `rel=prev` page                  |
+| `u`             | `g u`           | up one directory                              |
+| `w`             | `y y`           | copy the link at point (else the page URL)    |
+| `&`             |                 | open in the system browser                    |
+| `d`             |                 | download the link at point to ~/Downloads     |
+| `R`             |                 | reader mode (main content only)               |
+| `I` / `C`       |                 | toggle images / author CSS                    |
+| `v`             |                 | view source                                   |
+| `b` / `B`       | `m` / `B`       | bookmark this page / open a bookmark          |
+| `h`             |                 | history                                       |
+| `q`             | `q`             | quit back to where skim was opened            |
+
+Evil users also get `j`/`k`/`w`/`b`/`gg`/`G`/`C-d`/`C-u` and `/` `n` `N` search.
+
+## Options
+
+All are strings set with `set-option` (from an init.scm `'config` thunk).
+Booleans take `"on"` / `"off"`.
+
+| option                 | default                            | meaning                              |
+|------------------------|------------------------------------|--------------------------------------|
+| `skim-width`           | `100`                              | wrap width in columns                |
+| `skim-search-url`      | `https://html.duckduckgo.com/html/?q=` | search prefix                    |
+| `skim-home`            | (empty)                            | text the `skim` prompt starts with   |
+| `skim-images`          | `on`                               | inline images                        |
+| `skim-image-max-width` | `640`                              | image width cap (px)                 |
+| `skim-max-images`      | `60`                               | images per page                      |
+| `skim-css`             | `on`                               | honour author CSS at all             |
+| `skim-external-css`    | `on`                               | fetch `<link rel=stylesheet>`        |
+| `skim-css-colors`      | `on`                               | author colours (low contrast dropped) |
+| `skim-palette`         | `dark`                             | `dark` / `light` to match your theme |
+| `skim-viewport-width`  | `1024`                             | px width `@media` queries see        |
+| `skim-heading-scale`   | `on`                               | larger h1–h3 lines                   |
+| `skim-spacing-floor`   | `on`                               | keep a blank line around paragraphs even under CSS resets |
+| `skim-user-agent`      | Firefox-like                       | User-Agent header                    |
+
+Bookmarks live in `<config>/skim/bookmarks`; downloaded images in
+`<config>/skim/cache/`.
+
+## Layout of the code
+
+| file                  | what                                                     |
+|-----------------------|----------------------------------------------------------|
+| `skim.scm`            | entry point: loads the pieces in order                   |
+| `lib/skim-util.scm`   | entities, URL resolution, colours                        |
+| `lib/skim-html.scm`   | tokenizer + tree builder → DOM                           |
+| `lib/skim-css.scm`    | stylesheet parser, selectors, cascade, UA sheet          |
+| `lib/skim-layout.scm` | DOM + CSS → styled lines (blocks, wrap, lists, tables, forms, images) |
+| `lib/skim-main.scm`   | fetching, painting, interaction, history, keymaps        |
+
+Two Steel performance notes for anyone hacking on it. First, never grow an
+immutable hash that something else (a global, a pair) still references:
+every insert then copies the whole map. The per-render caches live in mutable
+slots on the elements instead. Second, `load` compiles a file before running
+it, so the entry file can't call into siblings it loads; that's why
+`skim.scm` is only a loader.
+
+## License
+
+MIT
