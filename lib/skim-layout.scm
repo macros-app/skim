@@ -121,7 +121,7 @@
 (define (skim--reveal el r)
   (let ((cs (car r)))
     (if (and (skim--script-revealed? cs)
-             (>= (string-length (skim--trim (skim--text-content el))) 20)
+             (>= (string-length (skim--squeeze (skim--text-content el))) 20)
              (or (member (skim--style cs "visibility") '("hidden" "collapse"))
                  (member (skim--style cs "opacity") '("0" "0.0" "0%"))))
         (cons (vector (hash-insert (vector-ref cs 0) "visibility" "visible")
@@ -452,8 +452,12 @@
   (let* ((pad (cond ((member align '("center" "-webkit-center")) (quotient (max 0 (- width col)) 2))
                     ((member align '("right" "end" "-webkit-right")) (max 0 (- width col)))
                     (else 0)))
-         (text (string-append (skim--spaces pad) (string-join (map car pieces) ""))))
-    (let loop ((ps pieces) (c pad) (fg #f) (bg #f) (lk #f) (fd #f) (spans '()))
+         (body (string-join (map car pieces) ""))
+         ;; a line of only (non-breaking) spaces — an &nbsp; paragraph — is blank
+         (blank? (equal? (skim--trim (string-replace body skim--nbsp " ")) ""))
+         (pad (if blank? 0 pad))
+         (text (if blank? "" (string-append (skim--spaces pad) body))))
+    (let loop ((ps (if blank? '() pieces)) (c pad) (fg #f) (bg #f) (lk #f) (fd #f) (spans '()))
       (if (null? ps)
           (skim--line text (reverse (skim--close-spans c fg bg lk fd spans))
                       (if (null? anchors) '() (list (cons 'anchors anchors))))
@@ -507,55 +511,145 @@
       (if (string? k)
           (begin (skim--add-text! st k ctx) (skim--walk-list (cdr ks) i prev first-el nel m ctx st))
           (let ((km (skim--mctx k m prev (+ i 1) (= (+ i 1) nel))))
-            (if (and (skim--para-empty? (vector-ref st 0)) (pair? (cdr ks))
-                     (not (hash-try-get ctx 'flex-inline))
-                     (skim--short-float? k km ctx))
-                (skim--float-layout k km (cdr ks) (+ i 1) nel m ctx st)
+            (if (and (skim--para-empty? (vector-ref st 0))
+                     (skim--short-float? k km ctx)
+                     ;; inside a flex row only out-of-flow badges qualify
+                     (or (not (hash-try-get ctx 'flex-inline))
+                         (equal? (skim--style (car (skim--compute-cached k km (hash-try-get ctx 'cs) (hash-try-get ctx 'sheet))) "position")
+                                 "absolute")))
+                ;; a run of adjacent short floats lines up as one group
+                (let gather ((rest (cdr ks)) (j (+ i 1)) (last km) (group (list (cons k km))))
+                  (let* ((next (let skip ((xs rest)) (if (and (pair? xs) (string? (car xs)) (equal? (skim--trim (car xs)) "")) (skip (cdr xs)) xs)))
+                         (nkm (and (pair? next) (skim--el? (car next))
+                                   (skim--mctx (car next) m last (+ j 1) (= (+ j 1) nel)))))
+                    (cond
+                      ((and nkm (skim--short-float? (car next) nkm ctx))
+                       (gather (cdr next) (+ j 1) nkm (cons (cons (car next) nkm) group)))
+                      ;; floats push aside BLOCK content; before inline
+                      ;; content (or nothing) they simply flow inline
+                      ((and nkm (skim--block-level? (car next) nkm ctx))
+                       (skim--float-layout (reverse group) rest j last nel m ctx st))
+                      (else
+                       (for-each (lambda (g)
+                                   (skim--walk-el (car g) (cdr g) (hash-insert ctx 'inline-box #t) st)
+                                   (skim--para-push! st (vector 'sp " " skim--plain-style)))
+                                 (reverse group))
+                       (skim--walk-list rest j last #f nel m ctx st)))))
                 (begin
                   (when (and (hash-try-get ctx 'flex-inline) (not first-el))
                     (skim--para-push! st (vector 'sp "  " skim--plain-style)))
                   (skim--walk-el k km ctx st)
                   (skim--walk-list (cdr ks) (+ i 1) km #f nel m ctx st))))))))
 
-;; A short left float (a vote count, a date, an icon caption) that the
-;; following content should wrap beside.
+;; A short box beside the content: a left float, or a small absolutely
+;; positioned badge (a date in the margin). Vote counts, dates, breadcrumb
+;; items, icon captions.
 (define (skim--short-float? k km ctx)
   (let* ((r (skim--compute-cached k km (hash-try-get ctx 'cs) (hash-try-get ctx 'sheet)))
          (cs (car r)))
-    (and (equal? (skim--style cs "float") "left")
+    (and (or (equal? (skim--style cs "float") "left")
+             (equal? (skim--style cs "position") "absolute"))
          (not (skim--hidden? cs))
          (hash-contains? skim--block-displays (skim--style cs "display"))
-         (let ((t (skim--trim (skim--text-content k))))
-           (and (> (string-length t) 0) (< (string-length t) 16)))
+         (let ((t (skim--squeeze (skim--text-content k))))
+           (and (> (string-length t) 0) (< (string-length t) 24)))
          (not (let loop ((ks (skim--el-kids k)))
                 (and (pair? ks)
                      (or (and (skim--el? (car ks))
-                              (skim--find-el (car ks) (lambda (e) (member (skim--el-tag e) '("table" "ul" "ol" "p" "img" "div")))))
+                              (skim--find-el (car ks) (lambda (e) (member (skim--el-tag e) '("table" "ul" "ol" "p" "img")))))
                          (loop (cdr ks)))))))))
 
-;; Lay out the siblings after float `k`, then put the float's text in the
-;; first line's left margin when it fits there, else as a hanging column.
-(define (skim--float-layout k km rest i nel m ctx st)
+;; Is `k` a visible, non-floated block-level box?
+(define (skim--block-level? k km ctx)
+  (let ((cs (car (skim--compute-cached k km (hash-try-get ctx 'cs) (hash-try-get ctx 'sheet)))))
+    (and (not (skim--hidden? cs))
+         (hash-contains? skim--block-displays (skim--style cs "display"))
+         (not (member (skim--style cs "float") '("left" "right"))))))
+
+;; Lay `el` out as a compact unit (a float or flex item whose content may
+;; hold blocks), flatten it to one line and flow that line into the
+;; paragraph. Boxes holding images keep normal inline flow (an image needs a
+;; line of its own).
+(define (skim--inline-box! el m cs r cctx st)
+  (let* ((tmp (skim--new-st))
+         (bctx (hash-insert (hash-insert cctx 'width 200) 'align-left #t)))
+    (skim--walk-inline el m cs r bctx tmp)
+    (skim--flush! tmp bctx)
+    (let ((lines (filter skim--line? (skim--resolve-items (skim--st-items tmp)))))
+      (cond
+        ((null? lines) #t)
+        ((let any ((ls lines)) (and (pair? ls) (or (skim--meta-get (car ls) 'img) (any (cdr ls)))))
+         (skim--walk-inline el m cs r cctx st))
+        (else
+         (for-each (lambda (it) (skim--para-push! st it))
+                   (skim--line->items (skim--join-lines lines))))))))
+
+;; A line back into paragraph text items, one per run of identical styling.
+(define (skim--line->items l)
+  (let* ((t (skim--line-text l)) (n (string-length t)) (spans (skim--line-spans l))
+         (cuts (sort (skim--dedupe-nums (append (list 0 n) (map car spans) (map cadr spans))) <))
+         (style-at (lambda (pos kind)
+                     (let loop ((ss spans))
+                       (cond ((null? ss) #f)
+                             ((and (eq? (caddr (car ss)) kind) (<= (car (car ss)) pos) (< pos (cadr (car ss)))) (cadddr (car ss)))
+                             (else (loop (cdr ss))))))))
+    (let loop ((cs cuts) (acc '()))
+      (if (or (null? cs) (null? (cdr cs)))
+          (reverse acc)
+          (let ((a (car cs)) (b (cadr cs)))
+            (loop (cdr cs)
+                  (if (>= a b) acc
+                      (cons (vector 'text (substring t a b)
+                                    (vector (style-at a 'fg) (style-at a 'bg) (style-at a 'link) (style-at a 'field))
+                                    'normal)
+                            acc))))))))
+
+(define (skim--dedupe-nums xs)
+  (let loop ((xs xs) (acc '()))
+    (cond ((null? xs) acc) ((memv (car xs) acc) (loop (cdr xs) acc)) (else (loop (cdr xs) (cons (car xs) acc))))))
+
+;; Displayed text: whitespace runs collapsed, ends trimmed.
+(define (skim--squeeze s) (skim--trim (replace-regexp-in-string "[ \\t\\r\\n]+" " " s)))
+
+;; Lines → one line, joined with single spaces (spans kept).
+(define (skim--join-lines lines)
+  (let loop ((ls lines) (text "") (spans '()))
+    (if (null? ls)
+        (skim--line text spans '())
+        (let* ((raw (skim--line-text (car ls)))
+               (t (skim--trim raw))
+               (lead (- (string-length raw) (string-length (replace-regexp-in-string "^ +" "" raw))))
+               (sep (if (or (equal? text "") (equal? t "")) "" " "))
+               (off (- (+ (string-length text) (string-length sep)) lead)))
+          (loop (cdr ls) (string-append text sep t)
+                (append spans (skim--shift-spans (skim--line-spans (car ls)) off)))))))
+
+;; Lay out the siblings after a float group, then put the group's text in
+;; the first line's left margin (shifting the content right only as far as
+;; needed), the way content wraps beside floats.
+(define (skim--float-layout group rest i last nel m ctx st)
   (skim--flush! st ctx)                 ; only whitespace (and anchors) pending
-  (let* ((fst (skim--new-st))
-         (_ (skim--walk-el k km (hash-insert ctx 'width 40) fst))
-         (_ (skim--flush! fst (hash-insert (hash-insert ctx 'width 40) 'align-left #t)))
-         (flines (filter skim--line? (skim--resolve-items (skim--st-items fst))))
-         (fline0 (if (pair? flines) (car flines) skim--blank-line))
-         (raw (skim--rtrim (skim--line-text fline0)))
-         (flead (- (string-length raw) (string-length (replace-regexp-in-string "^ +" "" raw))))
-         (ftext (substring raw flead (string-length raw)))
-         (fspans (skim--shift-spans (skim--line-spans fline0) (- 0 flead)))
-         (fcss (skim--px (skim--style (car (skim--compute-cached k km (hash-try-get ctx 'cs) (hash-try-get ctx 'sheet))) "width")))
-         (fw (max (+ (string-length ftext) 1) (if fcss (min 16 (skim--int (/ (+ fcss 4) 8))) 0)))
+  (let* ((fctx (hash-insert (hash-insert ctx 'width 200) 'align-left #t))
+         (fst (skim--new-st))
+         (_ (for-each (lambda (g)
+                        (skim--walk-el (car g) (cdr g) fctx fst)
+                        (skim--para-push! fst (vector 'sp " " skim--plain-style)))
+                      group))
+         (_ (skim--flush! fst fctx))
+         (fline (skim--join-lines (filter skim--line? (skim--resolve-items (skim--st-items fst)))))
+         (ftext (skim--line-text fline))
+         (fspans (skim--line-spans fline))
+         (css-cols (foldl (lambda (g n)
+                            (let ((px (skim--px (skim--style (car (skim--compute-cached (car g) (cdr g) (hash-try-get ctx 'cs) (hash-try-get ctx 'sheet))) "width"))))
+                              (+ n (if px (skim--int (/ (+ px 4) 8)) 0))))
+                          0 group))
+         (fw (max (+ (string-length ftext) 1) (min 16 css-cols)))
          (sub (skim--new-st)))
-    (skim--walk-list rest i km #f nel m ctx sub)
+    (skim--walk-list rest i last #f nel m ctx sub)
     (skim--flush! sub ctx)
     (let* ((items0 (skim--st-items sub))
            (first-text (let find-first ((xs items0)) (cond ((null? xs) #f) ((skim--line? (car xs)) (skim--line-text (car xs))) (else (find-first (cdr xs))))))
            (lead (if first-text (- (string-length first-text) (string-length (replace-regexp-in-string "^ +" "" first-text))) 0))
-           ;; content wraps beside the float: shift right only as far as the
-           ;; float needs beyond the content's own left margin
            (d (max 0 (- fw lead)))
            (items (if (> d 0) (skim--prefix items0 (skim--spaces d) (skim--spaces d) #f) items0)))
       (if (not first-text)
@@ -603,6 +697,7 @@
 (define (skim--child-ctx ctx el cs)
   (let* ((ctx (hash-insert ctx 'cs cs))
          (ctx (hash-insert ctx 'flex-inline #f))
+         (ctx (hash-insert ctx 'inline-box #f))
          (tag (skim--el-tag el))
          (ctx (if (and (equal? tag "a") (skim--attr el "href")
                        (not (starts-with? (skim--lower (skim--trim (skim--attr el "href"))) "javascript:")))
@@ -675,16 +770,17 @@
                                       (lambda (w) (skim--table el m cs (hash-insert cctx 'width w)))
                                       id))
            ;; a short float that isn't wrapped (see skim--float-layout) flows inline
+           ;; (menu items with hidden submenus included — their text counts)
            ((and (hash-contains? skim--block-displays display)
                  (member (skim--style cs "float") '("left" "right"))
-                 (< (string-length (skim--trim (skim--text-content el))) 40)
-                 (not (skim--find-el el (lambda (e) (member (skim--el-tag e) '("table" "ul" "ol" "p" "img"))))))
+                 (< (string-length (skim--squeeze (skim--text-content el))) 200)
+                 (not (skim--find-el el (lambda (e) (member (skim--el-tag e) '("table" "p" "img"))))))
             (when id (skim--para-push! st (vector 'anchor id)))
-            (skim--walk-inline el m cs r cctx st)
+            (skim--inline-box! el m cs r cctx st)
             (skim--para-push! st (vector 'sp " " skim--plain-style)))
            ((hash-contains? skim--block-displays display)
-            (if (hash-try-get ctx 'flex-inline)
-                (skim--walk-inline el m cs r cctx st)
+            (if (or (hash-try-get ctx 'flex-inline) (hash-try-get ctx 'inline-box))
+                (skim--inline-box! el m cs r cctx st)
                 (skim--block el m cs r cctx ctx st id)))
            (else
             (when id (skim--para-push! st (vector 'anchor id)))
@@ -764,7 +860,7 @@
          (and (pair? kids) (<= (length kids) 16)
               (let loop ((ks kids))
                 (or (null? ks)
-                    (and (< (string-length (skim--trim (skim--text-content (car ks)))) 80)
+                    (and (< (string-length (skim--squeeze (skim--text-content (car ks)))) 80)
                          (not (skim--find-el (car ks) (lambda (e) (hash-contains? skim--flex-blockers (skim--el-tag e)))))
                          (loop (cdr ks)))))))))
 
