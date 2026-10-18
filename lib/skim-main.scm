@@ -371,8 +371,14 @@
 
 ;; Lay out the current document and paint *skim*. `where`: 'top, 'keep, a
 ;; line number, or a fragment jump (when the URL has one and where is 'top).
+;; Where the last render put the cursor and when: a render following within
+;; 2s (a stylesheet that arrived quickly) must not trust `buffer-line`, which
+;; may not have caught up with that placement yet.
 (define (skim--render where)
-  (let* ((prev-line (if (equal? (current-buffer) skim--buffer) (buffer-line) #f))
+  (let* ((placed (skim--st 'placed))
+         (prev-line (cond ((and placed (< (- (current-inexact-milliseconds) (cdr placed)) 2000)) (car placed))
+                          ((equal? (current-buffer) skim--buffer) (buffer-line))
+                          (else #f)))
          (doc (skim--st 'doc))
          (root (if (skim--st 'reader) (skim--el "#root" '() (list (skim--main-content doc))) doc))
          (sheet (skim--build-sheet))
@@ -391,12 +397,17 @@
     (skim--st! 'forms (hash-try-get L 'forms))
     (skim--st! 'dirty #f)
     (skim--paint all)
-    (let ((frag (skim--url-fragment (skim--st 'url))))
-      (cond
-        ((number? where) (goto-line (min where (- (length all) 1))))
-        ((and (eq? where 'keep) prev-line) (goto-line (min prev-line (- (length all) 1))))
-        ((and (not (equal? frag "")) (hash-try-get (skim--st 'anchors) frag)) (skim--jump-fragment frag))
-        (else (goto-line 0))))
+    (let* ((frag (skim--url-fragment (skim--st 'url)))
+           (line (cond
+                   ((number? where) (min where (- (length all) 1)))
+                   ((and (eq? where 'keep) prev-line) (min prev-line (- (length all) 1)))
+                   ((and (not (equal? frag "")) (hash-try-get (skim--st 'anchors) (url-decode frag)))
+                    (hash-try-get (skim--st 'anchors) (url-decode frag)))
+                   (else 0))))
+      (goto-line line)
+      (when (and (not (eq? where 'keep)) (not (equal? frag "")) (hash-try-get (skim--st 'anchors) (url-decode frag)))
+        (scroll-cursor-to-row 0))
+      (skim--st! 'placed (cons line (current-inexact-milliseconds))))
     (message (string-append "skim: " (skim--st 'title)))))
 
 ;; Paint lines into the buffer: text, faces, link/field properties, line

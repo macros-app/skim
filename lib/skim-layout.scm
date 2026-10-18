@@ -225,7 +225,7 @@
          (bg-rgb (or (hash-try-get ctx 'bg-rgb) (skim--pal 'bg)))
          (css-fg (skim--css-color cs "color" bg-rgb))
          (heading? (hash-try-get ctx 'heading))
-         (mono? (skim--mono? cs))
+         (mono? (hash-try-get ctx 'code))
          (color (cond (link (skim--pal 'link))
                       ((skim--strike? cs) (skim--pal 'dim))
                       (css-fg css-fg)
@@ -572,6 +572,17 @@
                   ctx))
          (ctx (if (hash-contains? skim--headings tag) (hash-insert ctx 'heading tag) ctx))
          (ctx (if (eq? (skim--ws-mode cs) 'pre) (hash-insert ctx 'pre #t) ctx))
+         ;; Code styling: inside code-ish elements, or where an inline element
+         ;; switches to a monospace font — not a site whose body font is mono.
+         (mono? (skim--mono? cs))
+         (ctx (hash-insert ctx 'code
+                           (or (hash-try-get ctx 'code)
+                               (and mono?
+                                    (or (member tag '("code" "kbd" "samp" "tt" "pre" "xmp" "listing"))
+                                        (and (not (hash-contains? skim--block-displays (skim--style cs "display")))
+                                             (not (hash-try-get ctx 'mono))))
+                                    #t))))
+         (ctx (hash-insert ctx 'mono mono?))
          (ctx (let ((bg (and (not (hash-contains? skim--block-displays (skim--style cs "display")))
                              (skim--opt-bool "skim-css-colors" #t)
                              (skim--parse-color (skim--style cs "background-color")))))
