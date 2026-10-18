@@ -617,7 +617,10 @@
            ((equal? display "contents")
             (when id (skim--para-push! st (vector 'anchor id)))
             (skim--walk-inline el m cs r cctx st))
-           ((and (equal? tag "table") (equal? display "table"))
+           ;; A <table> restyled display:block (responsive tables) still lays
+           ;; its rows out as a table — the browser wraps them in an anonymous
+           ;; table box.
+           ((and (equal? tag "table") (member display '("table" "inline-table" "block" "inline-block")))
             (skim--flush! st ctx)
             (skim--block-margins-wrap st cs ctx el
                                       (lambda (w) (skim--table el m cs (hash-insert cctx 'width w)))
@@ -701,9 +704,9 @@
 
 ;; A flex row whose element children are all short and simple renders on
 ;; one line, like the navigation bars it usually is.
-(define skim--flex-blockers (hash "div" #t "p" #t "ul" #t "ol" #t "table" #t "h1" #t "h2" #t "h3" #t
-                                  "h4" #t "section" #t "article" #t "img" #t "pre" #t "form" #t
-                                  "blockquote" #t "figure" #t "header" #t "footer" #t))
+(define skim--flex-blockers (hash "p" #t "ul" #t "ol" #t "table" #t "h1" #t "h2" #t "h3" #t
+                                  "h4" #t "section" #t "article" #t "pre" #t "form" #t
+                                  "blockquote" #t "figure" #t))
 
 (define (skim--flex-inline? el cs)
   (and (member (skim--style cs "display") '("flex" "inline-flex"))

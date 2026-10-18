@@ -10,7 +10,7 @@
   (hash 'url #f 'title "" 'html #f 'status 200 'doc #f 'css-texts '() 'links #f 'fields #f
         'forms #f 'field-values (hash) 'targets '() 'anchors (hash) 'back '() 'forward '()
         'inflight #f 'next #f 'origin #f 'reader #f 'img-lines '() 'img-queue '()
-        'img-inflight #f 'img-failed (hash) 'css-cache (hash) 'css-queue '() 'css-inflight #f
+        'img-failed (hash) 'css-cache (hash) 'css-queue '()
         'dirty #f 'visited '() 'pending-line #f 'base #f 'confirm #f))
 
 (define (skim--st key) (hash-try-get skim--state key))
@@ -255,7 +255,8 @@
 ;; ── stylesheets ─────────────────────────────────────────────────────────────
 ;; <link rel=stylesheet> URLs whose media applies.
 (define (skim--stylesheet-urls doc)
-  (map (lambda (e) (skim--resolve (skim--st 'base) (skim--attr e "href")))
+  (skim--dedupe
+   (map (lambda (e) (skim--resolve (skim--st 'base) (skim--attr e "href")))
        (filter (lambda (e)
                  (let ((rel (skim--lower (or (skim--attr e "rel") "")))
                        (media (or (skim--attr e "media") "")))
@@ -263,7 +264,13 @@
                         (not (member "alternate" (skim--words rel)))
                         (skim--attr e "href")
                         (skim--media-ok? media (skim--dark?)))))
-               (skim--find-all-list doc (skim--tag? "link")))))
+               (skim--find-all-list doc (skim--tag? "link"))))))
+
+(define (skim--dedupe xs)
+  (let loop ((xs xs) (seen (hash)) (acc '()))
+    (cond ((null? xs) (reverse acc))
+          ((hash-contains? seen (car xs)) (loop (cdr xs) seen acc))
+          (else (loop (cdr xs) (hash-insert seen (car xs) #t) (cons (car xs) acc))))))
 
 (define (skim--css-on?) (skim--opt-bool "skim-css" #t))
 
@@ -274,7 +281,7 @@
   (let* ((key (list (skim--st 'url) (skim--st 'html-id) (skim--dark?) (skim--css-on?)
                     (skim--opt-bool "skim-external-css" #t)
                     (map (lambda (u) (hash-contains? (skim--st 'css-cache) u))
-                         (if (skim--st 'doc) (skim--take (skim--stylesheet-urls (skim--st 'doc)) 32) '()))))
+                         (if (skim--st 'doc) (skim--take (skim--stylesheet-urls (skim--st 'doc)) 120) '()))))
          (hit (skim--st 'sheet-cache)))
     (if (and hit (equal? (car hit) key))
         (cdr hit)
@@ -290,7 +297,7 @@
         (let* ((linked (if (skim--opt-bool "skim-external-css" #t)
                            (filter (lambda (x) x)
                                    (map (lambda (u) (hash-try-get (skim--st 'css-cache) u))
-                                        (skim--take (skim--stylesheet-urls (skim--st 'doc)) 32)))
+                                        (skim--take (skim--stylesheet-urls (skim--st 'doc)) 120)))
                            '()))
                ;; linked sheets usually come from <head> before inline <style>;
                ;; that's the common cascade order.
@@ -301,7 +308,7 @@
 (define (skim--queue-stylesheets)
   (when (and (skim--css-on?) (skim--opt-bool "skim-external-css" #t))
     (let ((missing (filter (lambda (u) (not (hash-contains? (skim--st 'css-cache) u)))
-                           (skim--take (skim--stylesheet-urls (skim--st 'doc)) 32))))
+                           (skim--take (skim--stylesheet-urls (skim--st 'doc)) 120))))
       (for-each (lambda (u)
                   (when (starts-with? u "file:")
                     (let ((path (skim--strip-query (url-decode (substring u 7 (string-length u))))))
@@ -314,40 +321,93 @@
           (skim--next-css))
         (when (and (null? remote) (pair? missing)) (skim--render 'keep))))))
 
-(define (skim--next-css)
-  (when (not (skim--st 'css-inflight))
-    (let ((q (skim--st 'css-queue)))
-      (if (null? q)
-          (begin
-            (if (equal? (current-buffer) skim--buffer)
-                (skim--render 'keep)
-                (skim--st! 'dirty #t)))
-          (begin
-            (skim--st! 'css-queue (cdr q))
-            (skim--st! 'css-inflight (car q))
-            (skim--st! 'css-started (current-inexact-milliseconds))
-            (run-with-timer 15000 "skim--css-watchdog")
-            (http-request-full "GET" (car q) (list "User-Agent" (skim--user-agent) "Accept" "text/css,*/*;q=0.1")
-                               "" 'skim--on-css))))))
+(define (skim--next-css) (skim--pool-pump skim--css-pool))
 
-;; A stylesheet that hasn't answered in 15s is given up on so the page still
-;; gets its final render.
-(define (skim--css-watchdog)
-  (when (and (skim--st 'css-inflight)
-             (> (- (current-inexact-milliseconds) (or (skim--st 'css-started) 0)) 14000))
-    (skim--st! 'css-cache (hash-insert (skim--st 'css-cache) (skim--st 'css-inflight) ""))
-    (skim--st! 'css-inflight #f)
-    (skim--next-css)))
+;; ── fetch pools ─────────────────────────────────────────────────────────────
+;; `http-request-full` reports back through ONE named callback, so a request
+;; can't say which URL it answers. A pool runs N requests at once by giving
+;; each slot its own callback (skim--on-css-0 …): the slot remembers its URL.
+;; A pool is #(slots queue-key callback-prefix on-done accept on-response).
+;; A slot is #f (free), (url . started-ms), or 'dead — timed out and still
+;; waiting for its late callback, so it can't be handed a new URL meanwhile.
+(define (skim--make-pool n queue-key prefix accept on-response on-idle)
+  (vector (make-vector n #f) queue-key prefix accept on-response on-idle))
 
-(define (skim--on-css payload)
-  (let ((url (skim--st 'css-inflight)))
-    (skim--st! 'css-inflight #f)
-    (when url
-      (let* ((r (skim--parse-full payload))
-             (ok? (and (>= (car r) 200) (< (car r) 300))))
-        (skim--st! 'css-cache (hash-insert (skim--st 'css-cache) url
-                                           (if ok? (decode-charset (caddr r) "utf-8") "")))))
-    (skim--next-css)))
+(define (skim--pool-busy? pool)
+  (let ((slots (vector-ref pool 0)))
+    (let loop ((i 0))
+      (cond ((>= i (vector-length slots)) #f)
+            ((pair? (vector-ref slots i)) #t)
+            (else (loop (+ i 1)))))))
+
+(define (skim--pool-pump pool)
+  (let ((slots (vector-ref pool 0)) (qk (vector-ref pool 1)))
+    (let loop ((i 0))
+      (when (< i (vector-length slots))
+        (let ((q (skim--st qk)))
+          (when (and (not (vector-ref slots i)) (pair? q))
+            (skim--st! qk (cdr q))
+            (vector-set! slots i (cons (car q) (current-inexact-milliseconds)))
+            (run-with-timer 15000 "skim--pools-watchdog")
+            (http-request-full "GET" (car q)
+                               (list "User-Agent" (skim--user-agent) "Accept" (vector-ref pool 3)
+                                     "Referer" (or (skim--st 'url) ""))
+                               "" (string-append (vector-ref pool 2) (number->string i)))))
+        (loop (+ i 1))))
+    (when (and (null? (skim--st qk)) (not (skim--pool-busy? pool)))
+      ((vector-ref pool 5)))))
+
+;; Slot `i` answered: hand (url payload) to the pool's handler, free the slot.
+(define (skim--pool-done pool i payload)
+  (let* ((slots (vector-ref pool 0)) (slot (vector-ref slots i)))
+    (vector-set! slots i #f)
+    (when (pair? slot) ((vector-ref pool 4) (car slot) payload))
+    (skim--pool-pump pool)))
+
+;; Requests that haven't answered in 15s are given up on (their slot stays
+;; 'dead until the late answer arrives) so pages still finish rendering.
+(define (skim--pool-expire pool on-expire)
+  (let ((slots (vector-ref pool 0)) (now (current-inexact-milliseconds)))
+    (let loop ((i 0) (expired #f))
+      (if (< i (vector-length slots))
+          (let ((s (vector-ref slots i)))
+            (if (and (pair? s) (> (- now (cdr s)) 14000))
+                (begin (vector-set! slots i 'dead) (on-expire (car s)) (loop (+ i 1) #t))
+                (loop (+ i 1) expired)))
+          (when expired (skim--pool-pump pool))))))
+
+(define (skim--pools-watchdog)
+  (skim--pool-expire skim--css-pool
+                     (lambda (u) (skim--st! 'css-cache (hash-insert (skim--st 'css-cache) u ""))))
+  (skim--pool-expire skim--img-pool
+                     (lambda (u) (skim--st! 'img-failed (hash-insert (skim--st 'img-failed) u #t)))))
+
+(define (skim--css-arrived url payload)
+  (let* ((r (skim--parse-full payload))
+         (ok? (and (>= (car r) 200) (< (car r) 300))))
+    (skim--st! 'css-cache (hash-insert (skim--st 'css-cache) url
+                                       (if ok? (decode-charset (caddr r) "utf-8") "")))))
+
+;; Every stylesheet is in: re-render (or mark dirty if *skim* isn't current).
+(define (skim--css-idle)
+  (if (equal? (current-buffer) skim--buffer)
+      (skim--render 'keep)
+      (skim--st! 'dirty #t)))
+
+(define skim--css-pool
+  (skim--make-pool 6 'css-queue "skim--on-css-" "text/css,*/*;q=0.1"
+                   (lambda (u p) (skim--css-arrived u p)) (lambda () (skim--css-idle))))
+
+(define (skim--on-css-0 p) (skim--pool-done skim--css-pool 0 p))
+(define (skim--on-css-1 p) (skim--pool-done skim--css-pool 1 p))
+(define (skim--on-css-2 p) (skim--pool-done skim--css-pool 2 p))
+(define (skim--on-css-3 p) (skim--pool-done skim--css-pool 3 p))
+(define (skim--on-css-4 p) (skim--pool-done skim--css-pool 4 p))
+(define (skim--on-css-5 p) (skim--pool-done skim--css-pool 5 p))
+
+;; Is a page, stylesheet or image still loading?
+(define (skim-loading?)
+  (or (if (skim--st 'inflight) #t #f) (pair? (skim--st 'css-queue)) (skim--pool-busy? skim--css-pool)))
 
 ;; ── rendering ───────────────────────────────────────────────────────────────
 ;; Reader mode: the main content element (article/main/role=main/#content),
@@ -511,40 +571,28 @@
                (loop (cdr xs) missing))
               (else (loop (cdr xs) (cons url missing)))))))))
 
-(define (skim--next-image)
-  (when (not (skim--st 'img-inflight))
-    (let ((q (skim--st 'img-queue)))
-      (when (pair? q)
-        (skim--st! 'img-queue (cdr q))
-        (skim--st! 'img-inflight (car q))
-        (skim--st! 'img-started (current-inexact-milliseconds))
-        (run-with-timer 15000 "skim--image-watchdog")
-        (http-request-full "GET" (car q)
-                           (list "User-Agent" (skim--user-agent) "Accept" "image/png,image/jpeg,image/gif,image/webp,image/*;q=0.8"
-                                 "Referer" (or (skim--st 'url) ""))
-                           "" 'skim--on-image)))))
+(define (skim--next-image) (skim--pool-pump skim--img-pool))
 
-(define (skim--image-watchdog)
-  (when (and (skim--st 'img-inflight)
-             (> (- (current-inexact-milliseconds) (or (skim--st 'img-started) 0)) 14000))
-    (skim--st! 'img-failed (hash-insert (skim--st 'img-failed) (skim--st 'img-inflight) #t))
-    (skim--st! 'img-inflight #f)
-    (skim--next-image)))
+(define (skim--image-arrived url payload)
+  (let* ((r (skim--parse-full payload))
+         (ct (skim--lower (or (skim--header (cadr r) "content-type") "")))
+         (ok? (and (>= (car r) 200) (< (car r) 300)))
+         (path (and ok? (skim--save-image url (caddr r) (if (equal? ct "") (skim--guess-image-type url) ct)))))
+    (if path
+        (when (equal? (current-buffer) skim--buffer)
+          (for-each (lambda (x) (when (equal? (cadr x) url) (set-line-image (car x) path (caddr x))))
+                    (skim--st 'img-lines)))
+        (skim--st! 'img-failed (hash-insert (skim--st 'img-failed) url #t)))))
 
-(define (skim--on-image payload)
-  (let ((url (skim--st 'img-inflight)))
-    (skim--st! 'img-inflight #f)
-    (when url
-      (let* ((r (skim--parse-full payload))
-             (ct (skim--lower (or (skim--header (cadr r) "content-type") "")))
-             (ok? (and (>= (car r) 200) (< (car r) 300)))
-             (path (and ok? (skim--save-image url (caddr r) (if (equal? ct "") (skim--guess-image-type url) ct)))))
-        (if path
-            (when (equal? (current-buffer) skim--buffer)
-              (for-each (lambda (x) (when (equal? (cadr x) url) (set-line-image (car x) path (caddr x))))
-                        (skim--st 'img-lines)))
-            (skim--st! 'img-failed (hash-insert (skim--st 'img-failed) url #t)))))
-    (skim--next-image)))
+(define skim--img-pool
+  (skim--make-pool 4 'img-queue "skim--on-image-"
+                   "image/png,image/jpeg,image/gif,image/webp,image/*;q=0.8"
+                   (lambda (u p) (skim--image-arrived u p)) (lambda () #t)))
+
+(define (skim--on-image-0 p) (skim--pool-done skim--img-pool 0 p))
+(define (skim--on-image-1 p) (skim--pool-done skim--img-pool 1 p))
+(define (skim--on-image-2 p) (skim--pool-done skim--img-pool 2 p))
+(define (skim--on-image-3 p) (skim--pool-done skim--img-pool 3 p))
 
 (define (skim--guess-image-type url)
   (let ((u (skim--lower url)))

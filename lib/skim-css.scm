@@ -575,18 +575,23 @@ small, sub, sup { font-size: smaller }
              skim--ua-sheet-cache)))
 
 ;; ── the cascade ─────────────────────────────────────────────────────────────
-;; Computed style = (inherited-hash . own-hash). Inherited properties (and
-;; custom properties) live in the first, shared with the parent until
-;; changed; the rest only in the second.
-(define skim--root-style (cons (hash) (hash)))
+;; Computed style = #(inherited own vars):
+;;   inherited — inherited properties (color, font-weight, …), shared with the
+;;               parent until an element changes one;
+;;   own       — non-inherited properties, this element only;
+;;   vars      — custom properties (--x), inherited, kept apart because pages
+;;               define hundreds of them and copying that map for every
+;;               element that sets `color` was the dominant cost.
+;; Each element's declarations go into small fresh maps first and are merged
+;; into the parent's maps once, so a shared map is copied at most once.
+(define skim--root-style (vector (hash) (hash) (hash)))
 
 (define (skim--style cs prop)
   (let ((v (if (hash-contains? skim--own-props prop)
-               (hash-try-get (cdr cs) prop)
-               (hash-try-get (car cs) prop))))
+               (hash-try-get (vector-ref cs 1) prop)
+               (hash-try-get (vector-ref cs 0) prop))))
     (or v (hash-try-get skim--prop-defaults prop) "")))
 
-;; Candidate rules for an element from the sheets (UA first, then author).
 (define (skim--candidates sheet m)
   (let* ((el (vector-ref m 0))
          (id (skim--attr el "id"))
@@ -650,8 +655,8 @@ small, sub, sup { font-size: smaller }
                     acc))))
     (reverse acc)))
 
-;; Resolve var(--x, fallback) references against the computed custom props.
-(define (skim--resolve-vars val inh depth)
+;; Resolve var(--x, fallback) references; `lookup` maps a name to its value.
+(define (skim--resolve-vars val lookup depth)
   (if (or (> depth 8) (not (string-contains? val "var(")))
       val
       (let ((c (regexp-captures "var\\(\\s*(--[-A-Za-z0-9_]+)\\s*(?:,\\s*([^()]*(?:\\([^()]*\\))?[^()]*))?\\)" val)))
@@ -659,31 +664,37 @@ small, sub, sup { font-size: smaller }
             val
             (let* ((name (nth c 1))
                    (fallback (skim--trim (nth c 2)))
-                   (v (or (hash-try-get inh name) fallback))
+                   (v (or (lookup name) fallback))
                    (whole (nth c 0)))
-              (skim--resolve-vars (string-replace val whole v) inh (+ depth 1)))))))
+              (skim--resolve-vars (string-replace val whole v) lookup (+ depth 1)))))))
 
-(define (skim--apply-decl inh own prop val parent)
-  (cond
-    ((starts-with? prop "--") (cons (hash-insert inh prop val) own))
-    (else
-     (let* ((val (if (string-contains? val "var(") (skim--lower (skim--resolve-vars val inh 0)) val))
-            (own? (hash-contains? skim--own-props prop))
-            (val (cond ((equal? val "inherit")
-                        (if own? (or (hash-try-get (cdr parent) prop) "") (or (hash-try-get (car parent) prop) "")))
-                       ((or (equal? val "initial") (equal? val "unset") (equal? val "revert"))
-                        (hash-try-get skim--prop-defaults prop))
-                       (else val))))
-       (if own?
-           (cons inh (hash-insert own prop val))
-           (cons (hash-insert inh prop val) own))))))
+(define (skim--merge base delta)
+  (if (= (hash-length delta) 0)
+      base
+      (foldl (lambda (k h) (hash-insert h k (hash-try-get delta k))) base (hash-keys->list delta))))
 
-(define (skim--apply-decls cs decls parent)
-  (let loop ((ds decls) (inh (car cs)) (own (cdr cs)))
-    (if (null? ds)
-        (cons inh own)
-        (let ((r (skim--apply-decl inh own (car (car ds)) (cdr (car ds)) parent)))
-          (loop (cdr ds) (car r) (cdr r))))))
+;; Apply `decls` ((prop . value) …, lowest priority first) over `parent`.
+(define (skim--cascade decls parent)
+  (let ((pinh (vector-ref parent 0)) (pown (vector-ref parent 1)) (pvars (vector-ref parent 2)))
+    (let loop ((ds decls) (d (hash)) (own (hash)) (vd (hash)))
+      (if (null? ds)
+          (vector (skim--merge pinh d) own (skim--merge pvars vd))
+          (let ((prop (car (car ds))) (val (cdr (car ds))))
+            (if (starts-with? prop "--")
+                (loop (cdr ds) d own (hash-insert vd prop val))
+                (let* ((val (if (string-contains? val "var(")
+                                (skim--lower (skim--resolve-vars
+                                              val (lambda (n) (or (hash-try-get vd n) (hash-try-get pvars n))) 0))
+                                val))
+                       (own? (hash-contains? skim--own-props prop))
+                       (val (cond ((equal? val "inherit")
+                                   (or (hash-try-get (if own? pown pinh) prop) ""))
+                                  ((or (equal? val "initial") (equal? val "unset") (equal? val "revert"))
+                                   (hash-try-get skim--prop-defaults prop))
+                                  (else val))))
+                  (if own?
+                      (loop (cdr ds) d (hash-insert own prop val) vd)
+                      (loop (cdr ds) (hash-insert d prop val) own vd)))))))))
 
 ;; Compute an element's style. `sheet` holds UA + author rules; returns
 ;; (cs before-content after-content) where the contents are strings or #f.
@@ -693,14 +704,15 @@ small, sub, sup { font-size: smaller }
          (main (filter (lambda (r) (not (vector-ref (vector-ref r 0) 2))) sorted))
          (ua (filter (lambda (r) (= (vector-ref r 2) 0)) main))
          (author (filter (lambda (r) (= (vector-ref r 2) 1)) main))
-         (cs (cons (car parent-cs) (hash)))
-         (cs (skim--apply-decls cs (apply append (map (lambda (r) (vector-ref r 3)) ua)) parent-cs))
-         (cs (skim--apply-decls cs (skim--presentational el) parent-cs))
-         (cs (skim--apply-decls cs (apply append (map (lambda (r) (vector-ref r 3)) author)) parent-cs))
          (inline (let ((s (skim--attr el "style"))) (if s (skim--parse-decls s) (cons '() '()))))
-         (cs (skim--apply-decls cs (car inline) parent-cs))
-         (cs (skim--apply-decls cs (apply append (map (lambda (r) (vector-ref r 4)) main)) parent-cs))
-         (cs (skim--apply-decls cs (cdr inline) parent-cs))
+         (cs (skim--cascade
+              (append (apply append (map (lambda (r) (vector-ref r 3)) ua))
+                      (skim--presentational el)
+                      (apply append (map (lambda (r) (vector-ref r 3)) author))
+                      (car inline)
+                      (apply append (map (lambda (r) (vector-ref r 4)) main))
+                      (cdr inline))
+              parent-cs))
          (pseudos (filter (lambda (r) (vector-ref (vector-ref r 0) 2)) sorted)))
     (list cs
           (skim--pseudo-content pseudos "before" cs)
@@ -711,9 +723,8 @@ small, sub, sup { font-size: smaller }
   (let ((rs (filter (lambda (r) (equal? (vector-ref (vector-ref r 0) 2) which)) rules)))
     (if (null? rs)
         #f
-        (let* ((pcs (skim--apply-decls (cons (car cs) (hash))
-                                       (apply append (map (lambda (r) (append (vector-ref r 3) (vector-ref r 4))) rs))
-                                       cs))
+        (let* ((pcs (skim--cascade (apply append (map (lambda (r) (append (vector-ref r 3) (vector-ref r 4))) rs))
+                                   cs))
                (content (skim--style pcs "content"))
                (display (skim--style pcs "display")))
           (if (equal? display "none") #f (skim--content->text content))))))
@@ -783,4 +794,8 @@ small, sub, sup { font-size: smaller }
                  (member (skim--style cs "width") '("1px" "0" "0px"))
                  (member (skim--style cs "height") '("1px" "0" "0px"))
                  (let ((l (skim--px (skim--style cs "left"))) (t (skim--px (skim--style cs "top"))))
-                   (or (and l (< l -500)) (and t (< t -500)))))))))
+                   (or (and l (or (< l -500) (> l (skim--viewport-px))))
+                       (and t (< t -500))
+                       ;; left: 100% (or more) parks it just off the right edge
+                       (let ((c (regexp-captures "^([0-9.]+)%$" (skim--style cs "left"))))
+                         (and (not (null? c)) (>= (string->number (nth c 1)) 100))))))))))
