@@ -182,7 +182,7 @@
 
 ;; The current document's stylesheet URLs skim will use (at most 120).
 (define (skim--doc-stylesheets)
-  (if (skim--st 'doc) (skim--doc-stylesheets) '()))
+  (if (skim--st 'doc) (skim--take (skim--stylesheet-urls (skim--st 'doc)) 120) '()))
 
 (define (skim--css-on?) (skim--setting "skim-css" #t))
 
@@ -239,11 +239,24 @@
     (skim--st-put! 'css-cache url
                                        (if ok? (decode-charset (caddr r) "utf-8") ""))))
 
-;; Every stylesheet is in: re-render (or mark dirty if *skim* isn't current).
+;; Is *skim* on screen? "Visible" rather than "current": right after a
+;; minibuffer read (skim-open) the snapshot can still report the previous
+;; buffer while *skim* is on screen.
+(define (skim--showing?)
+  (or (equal? (current-buffer) skim--buffer) (>= (get-buffer-window skim--buffer) 0)))
+
+;; Every stylesheet is in: re-render if *skim* is on screen. Fast servers
+;; answer before the editor has even applied the first render, so otherwise
+;; mark it dirty and look again shortly (and on the next switch to *skim*).
 (define (skim--css-idle)
-  (if (equal? (current-buffer) skim--buffer)
+  (if (skim--showing?)
       (skim--render 'keep)
-      (skim--st! 'dirty #t)))
+      (begin (skim--st! 'dirty #t)
+             (run-with-timer 300 "skim--retry-dirty"))))
+
+(define (skim--retry-dirty)
+  (when (and (skim--st 'dirty) (skim--showing?))
+    (skim--render 'keep)))
 
 (define skim--css-pool
   (skim--make-pool 6 'css-queue "skim--on-css-" "text/css,*/*;q=0.1"
@@ -270,9 +283,10 @@
          (ok? (and (>= (car r) 200) (< (car r) 300)))
          (path (and ok? (skim--save-image url (caddr r) (if (equal? ct "") (skim--guess-image-type url) ct)))))
     (if path
-        (when (equal? (current-buffer) skim--buffer)
-          (for-each (lambda (x) (when (equal? (cadr x) url) (set-line-image (car x) path (caddr x))))
-                    (skim--st 'img-lines)))
+        (if (skim--showing?)
+            (for-each (lambda (x) (when (equal? (cadr x) url) (set-line-image (car x) path (caddr x))))
+                      (skim--st 'img-lines))
+            (run-with-timer 300 "skim--show-images"))
         (skim--st-put! 'img-failed url #t))))
 
 (define skim--img-pool
@@ -292,7 +306,7 @@
 
 ;; Paint every image line whose file is cached; queue the rest.
 (define (skim--show-images)
-  (when (equal? (current-buffer) skim--buffer)
+  (when (skim--showing?)
     (let loop ((xs (skim--st 'img-lines)) (missing '()))
       (if (null? xs)
           (begin
