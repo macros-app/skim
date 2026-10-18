@@ -205,17 +205,23 @@
       ((equal? name "before") (cons "before" 1))
       ((equal? name "after") (cons "after" 1))
       ((member name '("not" "is" "where" "matches"))
-       (let ((alts (map (lambda (a)
+       (let* ((alts (map (lambda (a)
                           (let ((ts (skim--sel-tokens (skim--trim a))))
                             (if (or (not ts) (null? ts)) #f
                                 (let ((pc (skim--parse-compound ts)))
                                   (if (null? (cadddr pc)) (cons (car pc) (cadr pc)) #f)))))
-                        (split-many arg ","))))
-         (if (member #f alts)
-             (cons skim--never 0)
-             (cons (list (if (equal? name "not") 'not 'is) (map car alts))
-                   (if (equal? name "where") 0
-                       (foldl (lambda (a m) (max m (cdr a))) 0 alts))))))
+                        (skim--split-selectors arg)))
+             ;; Complex alternatives (with combinators) are dropped: in
+             ;; :is()/:where() they just can't match, in :not() we assume the
+             ;; excluded case doesn't apply. Rejecting the whole rule instead
+             ;; loses e.g. every Tailwind Typography (.prose) style.
+             (simple (filter (lambda (a) a) alts)))
+         (cond
+           ((and (null? simple) (not (equal? name "not"))) (cons skim--never 0))
+           (else
+            (cons (list (if (equal? name "not") 'not 'is) (map car simple))
+                  (if (equal? name "where") 0
+                      (foldl (lambda (a m) (max m (cdr a))) 0 simple)))))))
       (else (cons skim--never 100)))))
 
 ;; Selector text (no commas) → #(compounds spec pseudo-element) or #f.
@@ -268,12 +274,32 @@
           (map (lambda (k) (string-append "." k)) (vector-ref c 2))))
 
 ;; Index key of a selector: its rightmost compound's id, first class, or tag.
-(define (skim--sel-key sel)
-  (let ((c (car (car (vector-ref sel 0)))))
-    (cond ((vector-ref c 1) (string-append "#" (vector-ref c 1)))
-          ((pair? (vector-ref c 2)) (string-append "." (car (vector-ref c 2))))
-          ((vector-ref c 0) (vector-ref c 0))
-          (else "*"))))
+;; Index keys of a selector: its rightmost compound's id, first class or tag.
+;; A compound with none of those but an :is()/:where() whose alternatives all
+;; have one (`:where(p)`, `:is(h1, h2)`) is indexed under each of those, so
+;; it isn't tested against every element.
+(define (skim--compound-key c)
+  (cond ((vector-ref c 1) (string-append "#" (vector-ref c 1)))
+        ((pair? (vector-ref c 2)) (string-append "." (car (vector-ref c 2))))
+        ((vector-ref c 0) (vector-ref c 0))
+        (else #f)))
+
+(define (skim--sel-keys sel)
+  (let* ((c (car (car (vector-ref sel 0))))
+         (k (skim--compound-key c)))
+    (if k
+        (list k)
+        (let ((is (filter (lambda (p) (and (pair? p) (eq? (car p) 'is))) (vector-ref c 4))))
+          (if (null? is)
+              (list "*")
+              (let ((keys (map skim--compound-key (cadr (car is)))))
+                (if (or (null? keys) (member #f keys)) (list "*") (skim--dedupe-strings keys))))))))
+
+(define (skim--dedupe-strings xs)
+  (let loop ((xs xs) (acc '()))
+    (cond ((null? xs) (reverse acc))
+          ((member (car xs) acc) (loop (cdr xs) acc))
+          (else (loop (cdr xs) (cons (car xs) acc))))))
 
 ;; ── matching ────────────────────────────────────────────────────────────────
 ;; A match context for one element: #(el classes parent prev index last?)
@@ -386,10 +412,15 @@
 (define (skim--sheet-add sheet sel decls origin)
   (let* ((n (hash-try-get sheet 'count))
          (rule (vector sel n origin (car decls) (cadr decls) (caddr decls)))
-         (key (skim--sel-key sel))
-         (bucket (cons rule (or (hash-try-get sheet key) '())))
          (pseudo (or (hash-try-get sheet 'pseudo) (if (vector-ref sel 2) #t #f))))
-    (hash-insert (hash-insert (hash-insert sheet key bucket) 'count (+ n 1)) 'pseudo pseudo)))
+    (hash-insert (hash-insert (skim--sheet-bucket-add sheet (skim--sel-keys sel) rule) 'count (+ n 1))
+                 'pseudo pseudo)))
+
+(define (skim--sheet-bucket-add sheet keys rule)
+  (if (null? keys)
+      sheet
+      (let ((bucket (cons rule (or (hash-try-get sheet (car keys)) '()))))
+        (skim--sheet-bucket-add (hash-insert sheet (car keys) bucket) (cdr keys) rule))))
 
 ;; Length → px (number) or #f. `em`/`rem` assume 16px.
 (define (skim--px v)
@@ -519,7 +550,17 @@
           (if (null? sels)
               sheet
               (let ((sel (skim--parse-selector (car sels))))
-                (loop (cdr sels) (if sel (skim--sheet-add sheet sel decls origin) sheet))))))))
+                (loop (cdr sels) (if (and sel (not (skim--sel-never? sel)))
+                                     (skim--sheet-add sheet sel decls origin)
+                                     sheet))))))))
+
+;; A selector with a part skim can never match (:hover, :nth-child, …) is
+;; dropped at parse time rather than tested against every element.
+(define (skim--sel-never? sel)
+  (let loop ((cs (vector-ref sel 0)))
+    (and (pair? cs)
+         (or (memq skim--never (vector-ref (car (car cs)) 4))
+             (loop (cdr cs))))))
 
 ;; Split "a, b:is(c, d)" at top-level commas only.
 (define (skim--split-selectors s)
