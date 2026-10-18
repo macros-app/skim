@@ -20,7 +20,10 @@ to render pages the way a real browser lays them out.
   centred column, and short `float: left` boxes (vote counts, dates) sit beside
   the content they float next to. Flex rows of short items stay on one line, and
   visually hidden content (`display:none`, `.sr-only` clip patterns, off-screen
-  boxes) is skipped.
+  boxes) is skipped. Content that starts invisible and waits for JavaScript to
+  fade it in (an opacity/visibility transition on an in-flow element with real
+  text) is shown, since skim never runs the script. Images skim doesn't draw
+  still take up their declared width (spacer GIFs indent HN comment threads).
 - **Text.** Paragraphs are word-wrapped and honour `white-space`. `text-align`,
   `text-transform`, bold, italic (emphasis color), underline, strike, inline
   code, and author colours are applied when they have enough contrast against
@@ -30,6 +33,9 @@ to render pages the way a real browser lays them out.
   Tables use real column layout with colspan and rowspan: box-drawn when they
   hold data, borderless when they're page layout. `h1`–`h3` render at a larger
   line scale.
+- **Fast enough on heavy sites.** Stylesheets (up to 120 per page) and images
+  are fetched six and four at a time. Custom properties are kept as prebuilt
+  per-rule layers, so design-system pages with thousands of `--vars` stay fast.
 - **Images inline.** PNG/JPEG/GIF/WebP are downloaded in the background,
   cached on disk, and painted under their line. `data:` URIs, `srcset`, and
   lazy `data-src` are supported.

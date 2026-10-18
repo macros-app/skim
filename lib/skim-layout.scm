@@ -110,15 +110,18 @@
   (let ((c (vector-ref el 5)))
     (if (and c (= (car c) skim--gen))
         (cdr c)
-        (let ((r (skim--reveal (skim--compute el m parent-cs sheet))))
+        (let ((r (skim--reveal el (skim--compute el m parent-cs sheet))))
           (vector-set! el 5 (cons skim--gen r))
           r))))
 
 ;; A script-revealed element (see skim--script-revealed?) is made visible
-;; here, so its descendants inherit `visibility: visible` too.
-(define (skim--reveal r)
+;; here, so its descendants inherit `visibility: visible` too. Only real
+;; content qualifies: tiny hover affordances (a "#" permalink, an icon
+;; button) also fade in with a transition, but on :hover, not by script.
+(define (skim--reveal el r)
   (let ((cs (car r)))
     (if (and (skim--script-revealed? cs)
+             (>= (string-length (skim--trim (skim--text-content el))) 20)
              (or (member (skim--style cs "visibility") '("hidden" "collapse"))
                  (member (skim--style cs "opacity") '("0" "0.0" "0%"))))
         (cons (vector (hash-insert (vector-ref cs 0) "visibility" "visible")
