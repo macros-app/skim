@@ -96,9 +96,12 @@
             (skim--navigate (string-append (skim--strip-query action) "?" query) "GET" "" 'push)))))
 
 ;; ── opening pages ──────────────────────────────────────────────────────
-(define (skim-browse-url url)
-  (let ((u (skim--input->url url)))
-    (when u (skim--navigate u "GET" "" 'push))))
+;; Open `url` (or search for it). Without an argument — e.g. from M-x — ask.
+(define (skim-browse-url . args)
+  (if (null? args)
+      (skim-open)
+      (let ((u (skim--input->url (car args))))
+        (when u (skim--navigate u "GET" "" 'push)))))
 
 (define (skim)
   (if (and (skim--st 'url) (not (equal? (current-buffer) skim--buffer)) (member skim--buffer (buffer-names)))
@@ -195,7 +198,8 @@
 
 (define (skim-toggle-reader)
   (skim--st! 'reader (not (skim--st 'reader)))
-  (skim--render 'top))
+  (skim--render 'top)
+  (message (string-append "skim: reader mode " (if (skim--st 'reader) "on" "off"))))
 
 (define (skim-toggle-images)
   (let ((on? (skim--toggle! "skim-images" #t)))
@@ -265,16 +269,35 @@
                        (message (string-append "skim: bookmarked " title))))
                    (skim--st 'title))))
 
+;; Pick from (url . title) `entries`. The minibuffer hands back whatever was
+;; typed (TAB completes, RET doesn't select), so the input is resolved here:
+;; an exact label, nothing (→ the first entry), else the best fuzzy match;
+;; only text matching no entry is treated as a URL or search.
 (define (skim--pick-url prompt entries)
   (if (null? entries)
       (message "skim: nothing to choose from")
-      (let ((labels (map (lambda (e) (string-append (cdr e) "  —  " (car e))) entries)))
+      (let ((labels (map skim--entry-label entries)))
         (completing-read prompt labels
-                         (lambda (choice)
-                           (let ((hit (filter (lambda (e) (equal? (string-append (cdr e) "  —  " (car e)) choice)) entries)))
-                             (if (pair? hit)
-                                 (skim--navigate (car (car hit)) "GET" "" 'push)
-                                 (skim-browse-url choice))))))))
+                         (lambda (input)
+                           (let ((url (skim--resolve-pick (skim--trim input) entries labels)))
+                             (if url
+                                 (skim--navigate url "GET" "" 'push)
+                                 (skim-browse-url input))))))))
+
+(define (skim--entry-label e) (string-append (cdr e) "  —  " (car e)))
+
+;; The URL `input` picks from `entries`, or #f when it matches none.
+(define (skim--resolve-pick input entries labels)
+  (if (equal? input "")
+      (car (car entries))
+      (let* ((exact (skim--index-where (lambda (l) (equal? l input)) labels))
+             (ranked (if exact '() (fuzzy-match input labels)))
+             (i (or exact (and (pair? ranked) (skim--index-where (lambda (l) (equal? l (car ranked))) labels)))))
+        (and i (car (list-ref entries i))))))
+
+(define (skim--index-where pred xs)
+  (let loop ((xs xs) (i 0))
+    (cond ((null? xs) #f) ((pred (car xs)) i) (else (loop (cdr xs) (+ i 1))))))
 
 (define (skim-bookmarks) (skim--pick-url "Bookmark: " (skim--bookmarks)))
 
