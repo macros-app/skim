@@ -197,7 +197,20 @@
                 (cell-loop (+ col span) (if rc (cdr rs) rs) (cons cell-text text) spans meta
                            (+ pos (string-length cell-text)))))))))
 
+;; Past this many cells a table's cells are laid out one after another as
+;; plain blocks: column measuring renders every cell more than once.
+(define skim--max-table-cells 4000)
+
 (define (skim--table tbl m cs ctx)
+  (if (> (length (skim--find-all-list tbl (lambda (e) (member (skim--el-tag e) '("td" "th")))))
+         skim--max-table-cells)
+      (let ((sub (skim--new-st)))
+        (skim--walk-kids tbl m ctx sub)
+        (skim--flush! sub ctx)
+        (skim--st-items sub))
+      (skim--table-layout tbl m cs ctx)))
+
+(define (skim--table-layout tbl m cs ctx)
   (let* ((width (hash-try-get ctx 'width))
          (sheet (hash-try-get ctx 'sheet))
          (rows (skim--table-rows tbl))

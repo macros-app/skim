@@ -142,12 +142,15 @@
 (define (skim--frame->el f) (skim--el (vector-ref f 0) (vector-ref f 1) (reverse (vector-ref f 2))))
 
 ;; Is an element named in `names` (a hash) open before hitting a scope boundary?
+;; Looks at most 24 elements up: implied end tags concern nearby ancestors,
+;; and an unbounded search made every tag cost O(depth) on deep pages.
 (define (skim--in-scope? stack names boundary)
-  (let loop ((st stack))
+  (let loop ((st stack) (n 0))
     (cond ((null? (cdr st)) #f)                       ; never pop the root
+          ((>= n 24) #f)
           ((hash-contains? names (skim--frame-tag (car st))) #t)
           ((hash-contains? boundary (skim--frame-tag (car st))) #f)
-          (else (loop (cdr st))))))
+          (else (loop (cdr st) (+ n 1))))))
 
 ;; Pop (closing) frames until one named in `names` has been popped.
 (define (skim--pop-until stack names)
@@ -200,6 +203,11 @@
 
 ;; Parse `html` → (list root-el css-texts). The root is a synthetic "#root"
 ;; element; css-texts are the <style> bodies in document order.
+;; Deepest element nesting the parser builds. Real pages stay well under
+;; 100; a crafted page nested tens of thousands deep would otherwise make
+;; layout quadratic and freeze the editor.
+(define skim--max-depth 128)
+
 (define (skim--parse-html html)
   (let* ((toks (skim--tokenize html))
          (attr-strs (let collect ((ps toks) (i 0) (acc '()))
@@ -212,11 +220,15 @@
                                        (let ((x (split-many (car ps) skim--S2)))
                                          (cons (if (null? (cdr x)) "" (cadr x)) acc)))))))
          (attrs-all (skim--parse-attrs-batch attr-strs)))
+   ;; `skipped` counts start tags past skim--max-depth that weren't opened,
+   ;; so their end tags are dropped too instead of closing an ancestor.
+   (let ((skipped (mutable-vector 0)))
    (let loop ((ps toks)
              (i 0)
              (stack (list (skim--frame "#root" '())))
              (css '())
-             (attrs-all attrs-all))
+             (attrs-all attrs-all)
+             (depth 1))                   ; (length stack), kept as a count
     (if (null? ps)
         (let ((st (let close ((st stack))
                     (if (null? (cdr st)) st
@@ -229,23 +241,37 @@
             ((even? i)
              (when (not (equal? p ""))
                (skim--frame-add! (car stack) (skim--entities p)))
-             (loop (cdr ps) (+ i 1) stack css attrs-all))
+             (loop (cdr ps) (+ i 1) stack css attrs-all depth))
             ;; css
             ((starts-with? p skim--S4)
-             (loop (cdr ps) (+ i 1) stack (cons (substring p 1 (string-length p)) css) attrs-all))
+             (loop (cdr ps) (+ i 1) stack (cons (substring p 1 (string-length p)) css) attrs-all depth))
             (else
              (let* ((parts (split-many p skim--S2))
                     (name (skim--lower (car parts)))
                     (rest (if (null? (cdr parts)) "" (cadr parts))))
-               (if (starts-with? name "/")
-                   (loop (cdr ps) (+ i 1) (skim--end-tag stack (substring name 1 (string-length name))) css attrs-all)
+               (cond
+                 ((and (starts-with? name "/") (> (vector-ref skipped 0) 0))
+                  (vector-set! skipped 0 (- (vector-ref skipped 0) 1))
+                  (loop (cdr ps) (+ i 1) stack css attrs-all depth))
+                 ((starts-with? name "/")
+                  (let ((st (skim--end-tag stack (substring name 1 (string-length name)))))
+                    (loop (cdr ps) (+ i 1) st css attrs-all (if (eq? st stack) depth (length st)))))
+                 (else
                    (let* ((self-closing (ends-with? rest "/"))
                           (attrs (car attrs-all))
-                          (st (skim--before-open stack name)))
-                     (if (or self-closing (hash-contains? skim--void-tags name))
-                         (begin (skim--frame-add! (car st) (skim--el name attrs '()))
-                                (loop (cdr ps) (+ i 1) st css (cdr attrs-all)))
-                         (loop (cdr ps) (+ i 1) (cons (skim--frame name attrs) st) css (cdr attrs-all)))))))))))))
+                          (st (skim--before-open stack name))
+                          (d (if (eq? st stack) depth (length st))))
+                     (cond
+                       ((or self-closing (hash-contains? skim--void-tags name))
+                        (skim--frame-add! (car st) (skim--el name attrs '()))
+                        (loop (cdr ps) (+ i 1) st css (cdr attrs-all) d))
+                       ;; too deep: don't open it (its content joins the
+                       ;; current element) — bounds every walk over the DOM
+                       ((>= d skim--max-depth)
+                        (vector-set! skipped 0 (+ (vector-ref skipped 0) 1))
+                        (loop (cdr ps) (+ i 1) st css (cdr attrs-all) d))
+                       (else
+                        (loop (cdr ps) (+ i 1) (cons (skim--frame name attrs) st) css (cdr attrs-all) (+ d 1))))))))))))))))
 
 (define (skim--end-tag stack name)
   (cond

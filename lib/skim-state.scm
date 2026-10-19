@@ -36,6 +36,9 @@
 
 (define (skim--bookmarks-file) (string-append (persistence-directory) "/skim/bookmarks"))
 
+;; The Referer for a request to `target` from the current page.
+(define (skim--referer-for target) (skim--referer (skim--st 'url) target))
+
 ;; ── URLs and text ──────────────────────────────────────────────────────
 (define (skim--input->url input)
   (let ((s (skim--trim input)))

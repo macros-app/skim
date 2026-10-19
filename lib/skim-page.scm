@@ -28,10 +28,10 @@
       ((skim--st 'inflight)
        ;; One page request at a time: the stale response is dropped on arrival.
        (skim--st! 'next (vector url method body mode))
-       (message (string-append "skim: loading " url " …")))
+       (message (string-append "skim: loading " (skim--display-url url) " …")))
       (else
        (skim--st! 'inflight (vector url method body mode))
-       (message (string-append "skim: loading " url " …"))
+       (message (string-append "skim: loading " (skim--display-url url) " …"))
        (http-request-full method url
                           (if (equal? method "POST")
                               (append (skim--request-headers)
@@ -39,6 +39,16 @@
                               (skim--request-headers))
                           (or body "")
                           'skim--on-page)))))
+
+;; Navigation a page started (a link, a form, rel=next, a meta refresh).
+;; A web page may not open local files: only a local page may lead to
+;; file: URLs (you can still type one, or use a bookmark or history).
+(define (skim--local-url? url) (starts-with? (skim--lower url) "file:"))
+
+(define (skim--navigate-from-page url method body mode)
+  (if (and (skim--local-url? url) (not (skim--local-url? (or (skim--st 'url) ""))))
+      (message "skim: a web page can't open local files (file:)")
+      (skim--navigate url method body mode)))
 
 (define (skim--on-page payload)
   (let ((req (skim--st 'inflight)) (next (skim--st 'next)))
@@ -75,10 +85,11 @@
 
 ;; ── documents ──────────────────────────────────────────────────────────
 ;; Install a fetched/remembered document and render it.
-(define (skim--load-html url html status mode)
+(define (skim--load-html url html0 status mode)
   (when (eq? mode 'push) (skim--push-history))
   (when (not (eq? mode 'history)) (skim--st! 'pending-line #f))
-  (let* ((parsed (skim--parse-html html))
+  (let* ((html (skim--cap-html html0))
+         (parsed (skim--parse-html html))
          (doc (car parsed)))
     (skim--st! 'url url)
     (skim--st! 'html html)
@@ -98,7 +109,7 @@
     (let ((refresh (skim--meta-refresh doc)))
       (if (and refresh (not (eq? mode 'history)))
           (begin (message (string-append "skim: redirecting to " refresh))
-                 (skim--navigate refresh "GET" "" 'replace))
+                 (skim--navigate-from-page refresh "GET" "" 'replace))
           (begin
             (skim--render (or (skim--st 'pending-line) 'top))
             (skim--queue-stylesheets))))))
@@ -166,6 +177,17 @@
       ((not (null? (regexp-captures "(?i)\\.x?html?$" path))) (skim--load-html url (read-file path) 200 mode))
       (else (skim--load-html url (string-append "<html><body><pre>" (skim--html-escape (read-file path)) "</pre></body></html>") 200 mode)))))
 
+;; Resource limits: what a page may make skim process, so a hostile or
+;; broken page can't freeze the editor (the engine is shared with it).
+(define skim--max-html 4000000)          ; chars of HTML laid out
+(define skim--max-sheet 2000000)         ; chars per stylesheet
+
+(define (skim--cap-html html)
+  (if (<= (string-length html) skim--max-html)
+      html
+      (begin (message "skim: page truncated — it's larger than skim lays out (4 MB)")
+             (substring html 0 skim--max-html))))
+
 ;; ── stylesheets ────────────────────────────────────────────────────────
 ;; <link rel=stylesheet> URLs whose media applies.
 (define (skim--stylesheet-urls doc)
@@ -213,7 +235,8 @@
                            '()))
                ;; linked sheets usually come from <head> before inline <style>;
                ;; that's the common cascade order.
-               (texts (append linked (skim--st 'css-texts))))
+               (texts (filter (lambda (t) (<= (string-length t) skim--max-sheet))
+                              (append linked (skim--st 'css-texts)))))
           (foldl (lambda (css sh) (skim--parse-css sh css 1 dark?)) sheet texts)))))
 
 ;; Fetch linked stylesheets not yet cached; re-render once they're all in.
@@ -222,10 +245,11 @@
     (let ((missing (filter (lambda (u) (not (hash-contains? (skim--st 'css-cache) u)))
                            (skim--doc-stylesheets))))
       (for-each (lambda (u)
-                  (when (starts-with? u "file:")
+                  ;; local sheets only for a local page — a web page must
+                  ;; not get skim to read files off this machine
+                  (when (and (skim--local-url? u) (skim--local-url? (or (skim--st 'url) "")))
                     (let ((path (skim--strip-query (url-decode (substring u 7 (string-length u))))))
-                      (skim--st-put! 'css-cache u
-                                                         (if (file-exists? path) (read-file path) "")))))
+                      (skim--st-put! 'css-cache u (if (file-exists? path) (read-file path) "")))))
                 missing)
       (let ((remote (filter (lambda (u) (starts-with? u "http")) missing)))
         (when (pair? remote)
@@ -281,7 +305,9 @@
   (let* ((r (skim--parse-full payload))
          (ct (skim--lower (or (skim--header (cadr r) "content-type") "")))
          (ok? (and (>= (car r) 200) (< (car r) 300)))
-         (path (and ok? (skim--save-image url (caddr r) (if (equal? ct "") (skim--guess-image-type url) ct)))))
+         ;; images over 15 MB aren't shown (the editor decodes them in full)
+         (small? (<= (string-length (caddr r)) 30000000))
+         (path (and ok? small? (skim--save-image url (caddr r) (if (equal? ct "") (skim--guess-image-type url) ct)))))
     (if path
         (if (skim--showing?)
             (for-each (lambda (x) (when (equal? (cadr x) url) (set-line-image (car x) path (caddr x))))
@@ -368,7 +394,7 @@
          (lines (hash-try-get L 'lines))
          (status (skim--st 'status))
          (head (list (skim--line (skim--st 'title) (list (list 0 (string-length (skim--st 'title)) 'fg (skim--title-face))) '())
-                     (let ((u (string-append (skim--st 'url)
+                     (let ((u (string-append (skim--display-url (skim--st 'url))
                                              (if (and (> status 0) (not (= status 200))) (string-append "  [" (number->string status) "]") "")
                                              (if (skim--st 'reader) "  [reader]" ""))))
                        (skim--line u (list (list 0 (string-length u) 'fg (skim--url-face))) '()))

@@ -220,6 +220,33 @@
 (define (skim--has-scheme? s)
   (not (null? (regexp-captures "^[a-zA-Z][a-zA-Z0-9+.-]*:" s))))
 
+;; Invisible bidirectional-text controls (LRE…RLO, LRI…PDI, LRM/RLM/ALM):
+;; in a URL or file name they make the text display differently from what
+;; it is, so they're stripped wherever skim shows or saves one.
+(define (skim--bidi-control? i)
+  (or (and (>= i #x202A) (<= i #x202E)) (and (>= i #x2066) (<= i #x2069))
+      (= i #x200E) (= i #x200F) (= i #x061C)))
+
+;; A URL as displayed: bidi controls and control characters removed.
+(define (skim--display-url url)
+  (list->string (filter (lambda (c) (let ((i (char->integer c)))
+                                      (not (or (< i 32) (= i 127) (skim--bidi-control? i)))))
+                        (string->list url))))
+
+;; The Referer to send with a subresource request from page `page` (the
+;; strict-origin-when-cross-origin policy): the full URL within the same
+;; origin, only the origin across origins, nothing from https to http.
+(define (skim--referer page target)
+  (cond
+    ((not page) "")
+    ((and (starts-with? page "https:") (starts-with? target "http:")) "")
+    ((equal? (skim--origin page) (skim--origin target)) (skim--strip-fragment page))
+    (else (string-append (skim--origin page) "/"))))
+
+(define (skim--origin url)
+  (let ((p (skim--url-parts url)))
+    (if p (string-append (car p) "://" (skim--lower (cadr p))) "")))
+
 ;; Percent-encode for application/x-www-form-urlencoded (space → +).
 (define (skim--form-encode s)
   (let loop ((bs (bytes->list (string->bytes s))) (acc '()))

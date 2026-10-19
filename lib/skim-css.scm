@@ -129,7 +129,17 @@
 
 ;; All reads happen before the inserts so `sheet` has no other live reference
 ;; when it's updated — Steel then updates in place instead of copying.
+(define skim--max-rules 40000)           ; per page (GitHub-scale CSS is ~12k)
+(define skim--max-universal 2000)        ; rules every element must test
+
 (define (skim--sheet-add sheet sel decls origin)
+  (if (or (>= (hash-try-get sheet 'count) skim--max-rules)
+          (and (equal? (skim--sel-keys sel) '("*"))
+               (>= (length (or (hash-try-get sheet "*") '())) skim--max-universal)))
+      sheet
+      (skim--sheet-add-rule sheet sel decls origin)))
+
+(define (skim--sheet-add-rule sheet sel decls origin)
   (let* ((n (hash-try-get sheet 'count))
          (rule (vector sel n origin (car decls) (cadr decls) (caddr decls)))
          (pseudo (or (hash-try-get sheet 'pseudo) (if (vector-ref sel 2) #t #f))))

@@ -38,7 +38,7 @@
       ((and src (not (equal? (skim--trim src) "")) (not (starts-with? src "data:"))) src)
       ((and srcset (not (equal? (skim--trim srcset) "")))
        (car (skim--words (car (split-many srcset ",")))))
-      ((and src (starts-with? src "data:image/") (> (string-length src) 400)) src)
+      ((and src (starts-with? src "data:image/") (> (string-length src) 400) (< (string-length src) 2000000)) src)
       (else #f))))
 
 (define (skim--image el cs ctx st)

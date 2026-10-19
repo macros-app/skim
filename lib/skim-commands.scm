@@ -36,16 +36,20 @@
     (cond
       ((skim--fget idx 'disabled) (message "skim: field is disabled"))
       ((member kind '("text" "textarea"))
-       (read-string (string-append (let ((l (skim--fget idx 'label))) (if (or (not l) (equal? l "")) "Input" l)) ": ")
-                    (lambda (input)
-                      (skim--set-value! idx input)
-                      (let ((form (skim--fget idx 'form)))
-                        (if (and form (equal? kind "text")
-                                 (= 1 (length (filter (lambda (i) (equal? (skim--fget i 'kind) "text"))
-                                                      (skim--form-fields form)))))
-                            (skim--submit form #f)
-                            (skim--render 'keep))))
-                    (skim--current-value idx)))
+       (let ((prompt (string-append (let ((l (skim--fget idx 'label))) (if (or (not l) (equal? l "")) "Input" l)) ": "))
+             (done (lambda (input)
+                     (skim--set-value! idx input)
+                     (let ((form (skim--fget idx 'form)))
+                       (if (and form (equal? kind "text")
+                                (= 1 (length (filter (lambda (i) (equal? (skim--fget i 'kind) "text"))
+                                                     (skim--form-fields form)))))
+                           (skim--submit form #f)
+                           (skim--render 'keep))))))
+         ;; A password is read masked and never enters minibuffer history
+         ;; (which savehist writes to disk).
+         (if (equal? (skim--fget idx 'type) "password")
+             (read-passwd prompt done)
+             (read-string prompt done (skim--current-value idx)))))
       ((equal? kind "checkbox")
        (skim--set-value! idx (not (skim--current-value idx)))
        (skim--render 'keep))
@@ -92,8 +96,8 @@
              (query (string-join (map (lambda (kv) (string-append (skim--form-encode (car kv)) "=" (skim--form-encode (cdr kv)))) pairs) "&"))
              (action (let ((a (hash-try-get f 'action))) (if (equal? a "") (skim--st 'url) a))))
         (if (equal? (hash-try-get f 'method) "post")
-            (skim--navigate action "POST" query 'push)
-            (skim--navigate (string-append (skim--strip-query action) "?" query) "GET" "" 'push)))))
+            (skim--navigate-from-page action "POST" query 'push)
+            (skim--navigate-from-page (string-append (skim--strip-query action) "?" query) "GET" "" 'push)))))
 
 ;; ── opening pages ──────────────────────────────────────────────────────
 ;; Open `url` (or search for it). Without an argument — e.g. from M-x — ask.
@@ -123,7 +127,7 @@
   (let ((link (skim--link-at-point)) (field (skim--field-at-point)))
     (cond
       (field (skim--activate-field field))
-      (link (skim--navigate link "GET" "" 'push))
+      (link (skim--navigate-from-page link "GET" "" 'push))
       (else (message "skim: nothing to follow here")))))
 
 (define (skim--goto-target dir)
@@ -138,7 +142,7 @@
         (let ((t (or hit (car ts))))
           (goto-char (car t))
           (message (if (eq? (cadr t) 'link)
-                       (vector-ref (skim--st 'links) (caddr t))
+                       (skim--display-url (vector-ref (skim--st 'links) (caddr t)))
                        (let ((f (vector-ref (skim--st 'fields) (caddr t))))
                          (string-append "[" (hash-try-get f 'kind) "] "
                                         (or (hash-try-get f 'name) "") " — RET to "
@@ -181,11 +185,24 @@
 ;; ── page actions ───────────────────────────────────────────────────────
 (define (skim-copy-url)
   (let ((u (or (skim--link-at-point) (skim--st 'url))))
-    (when u (clipboard-set u) (message (string-append "skim: copied " u)))))
+    (when u (clipboard-set u) (message (string-append "skim: copied " (skim--display-url u))))))
 
+;; Hand the link at point (or the page) to the system. Web and mail URLs go
+;; straight through; any other scheme (file:, smb:, an app's own handler…)
+;; could open local files or launch apps, so it asks first, like a browser.
 (define (skim-browse-external)
   (let ((u (or (skim--link-at-point) (skim--st 'url))))
-    (when u (open-url u) (message (string-append "skim: opened " u " externally")))))
+    (cond
+      ((not u) #t)
+      ((not (null? (regexp-captures "(?i)^(https?|mailto):" u))) (skim--open-external u))
+      (else
+       (skim--st! 'confirm (lambda () (skim--open-external u)))
+       (y-or-n-p (string-append "skim: open " (skim--display-url u) " with another application? ")
+                 'skim--confirm-yes)))))
+
+(define (skim--open-external u)
+  (open-url u)
+  (message (string-append "skim: opened " (skim--display-url u) " externally")))
 
 (define (skim-download)
   (let ((u (skim--link-at-point)))
@@ -228,11 +245,11 @@
     (and e (skim--resolve (skim--st 'base) (skim--attr e "href")))))
 
 (define (skim-next-page)
-  (let ((u (skim--rel-link "next"))) (if u (skim--navigate u "GET" "" 'push) (message "skim: no rel=next link"))))
+  (let ((u (skim--rel-link "next"))) (if u (skim--navigate-from-page u "GET" "" 'push) (message "skim: no rel=next link"))))
 
 (define (skim-previous-page)
   (let ((u (or (skim--rel-link "prev") (skim--rel-link "previous"))))
-    (if u (skim--navigate u "GET" "" 'push) (message "skim: no rel=prev link"))))
+    (if u (skim--navigate-from-page u "GET" "" 'push) (message "skim: no rel=prev link"))))
 
 (define (skim-up)
   (let ((u (skim--st 'url)))

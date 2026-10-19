@@ -69,7 +69,7 @@
             (run-with-timer 15000 "skim--pools-watchdog")
             (http-request-full "GET" (car q)
                                (list "User-Agent" (skim--user-agent) "Accept" (vector-ref pool 3)
-                                     "Referer" (or (skim--st 'url) ""))
+                                     "Referer" (skim--referer-for (car q)))
                                "" (string-append (vector-ref pool 2) (number->string i)))))
         (loop (+ i 1))))
     (when (and (null? (skim--st qk)) (not (skim--pool-busy? pool)))
@@ -132,9 +132,22 @@
              (skim--save-image url (base64url-hex (nth c 2)) (nth c 1))))))
 
 ;; ── downloads ──────────────────────────────────────────────────────────
+;; A server-chosen filename made safe to save: no directory parts (so no
+;; ../ escape from ~/Downloads, even percent-encoded), no control or bidi
+;; characters, no leading dots (hidden/relative names), bounded length.
+(define (skim--safe-filename name)
+  (let* ((base (last (split-many (string-replace name "\\" "/") "/")))
+         (clean (list->string
+                 (filter (lambda (c) (let ((i (char->integer c)))
+                                       (not (or (< i 32) (= i 127) (skim--bidi-control? i)))))
+                         (string->list base))))
+         (clean (replace-regexp-in-string "^[.\\s]+" "" clean))
+         (clean (if (> (string-length clean) 120) (substring clean 0 120) clean)))
+    (if (equal? (skim--trim clean) "") "download" clean)))
+
 (define (skim--download-path name)
   (let* ((dir (string-append (getenv "HOME") "/Downloads/"))
-         (name (if (equal? name "") "download" name)))
+         (name (skim--safe-filename name)))
     (let loop ((i 0))
       (let ((p (string-append dir (if (= i 0) name (string-append (number->string i) "-" name)))))
         (if (file-exists? p) (loop (+ i 1)) p)))))

@@ -109,6 +109,29 @@ Booleans take `"on"` / `"off"`.
 Bookmarks live in `<config>/skim/bookmarks`; downloaded images in
 `<config>/skim/cache/`.
 
+## Security
+
+skim treats every page as untrusted and runs no page code (no JavaScript, no
+`eval`, no processes). On top of that:
+
+- **Local files:** a web page can't read or open `file:` URLs — not as a
+  stylesheet, a link, a form target or a redirect. Only a local page (or a
+  URL you type, a bookmark, history) leads to local files.
+- **Downloads** are saved under ~/Downloads with a sanitized name (no `../`,
+  path separators, control or bidi characters, or leading dots), and only
+  after you confirm.
+- **Passwords** in forms are read masked and never enter minibuffer history
+  (which savehist writes to disk). Other form fields use the normal prompt,
+  so their text is kept in history like anything else you type there.
+- **External opening** (`&`): `http`, `https` and `mailto` go to the system
+  directly; any other scheme asks first.
+- **Referer:** subresource requests send the full page URL only within the
+  same origin, just the origin across sites, and nothing from https to http.
+- **Displayed URLs** have bidi-override and control characters stripped.
+- **Limits** keep a hostile page from freezing the editor: element nesting is
+  capped at 128, HTML at 4 MB, stylesheets at 2 MB each / 40 000 rules, tables
+  past 4 000 cells lay out as plain blocks, images over 15 MB aren't shown.
+
 ## Layout of the code
 
 | file                    | what                                                       |
