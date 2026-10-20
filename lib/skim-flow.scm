@@ -168,6 +168,13 @@
             (if (or (hash-try-get ctx 'flex-inline) (hash-try-get ctx 'inline-box))
                 (skim--inline-box! el m cs r cctx st)
                 (skim--block el m cs r cctx ctx st id)))
+           ;; a short inline-block holding blocks (a <details> "caches" menu
+           ;; in a byline) stays one unit in the line rather than breaking it
+           ((and (member display '("inline-block" "inline-flex"))
+                 (< (string-length (skim--squeeze (skim--text-content el))) 200)
+                 (skim--holds-block? el m cctx))
+            (when id (skim--para-push! st (vector 'anchor id)))
+            (skim--inline-box! el m cs r cctx st))
            (else
             (when id (skim--para-push! st (vector 'anchor id)))
             (skim--walk-inline el m cs r cctx st))))))))
@@ -227,6 +234,15 @@
     (and (not (skim--hidden? cs))
          (hash-contains? skim--block-displays (skim--style cs "display"))
          (not (member (skim--style cs "float") '("left" "right"))))))
+
+;; Does `el` have a block-level child? `ctx` is el's child context.
+(define (skim--holds-block? el m ctx)
+  (let* ((kids (filter skim--el? (skim--el-kids el))) (n (length kids)))
+    (let loop ((ks kids) (i 0) (prev #f))
+      (and (pair? ks)
+           (let ((km (skim--mctx (car ks) m prev (+ i 1) (= (+ i 1) n))))
+             (or (skim--block-level? (car ks) km ctx)
+                 (loop (cdr ks) (+ i 1) km)))))))
 
 ;; Lay `el` out as a compact unit (a float or flex item whose content may
 ;; hold blocks), flatten it to one line and flow that line into the

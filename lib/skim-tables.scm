@@ -97,10 +97,10 @@
           (vector (min mn mx) mx lines)))))
 
 (define (skim--min-content el m cs ctx)
-  (let ((saved skim--no-chop))
-    (set! skim--no-chop #t)
+  (let ((saved (vector-ref skim--no-chop 0)))
+    (vector-set! skim--no-chop 0 #t)
     (let ((w (skim--lines-width (skim--cell-lines el m cs ctx 0))))
-      (set! skim--no-chop saved)
+      (vector-set! skim--no-chop 0 saved)
       w)))
 
 ;; Distribute `avail` columns over `ncols` from per-cell min/max widths.
