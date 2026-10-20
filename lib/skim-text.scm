@@ -250,7 +250,9 @@
 ;; CSS min-content width: lay the cell out with every unbreakable unit (word,
 ;; image, spacer, form control) on a line of its own — no hard-splitting —
 ;; and take the widest. Width 0 keys this pass apart in the cell cache.
-(define skim--no-chop #f)
+;; A slot, not a plain global: a `#f` this file never set!s is compiled in as
+;; a constant, so skim-tables' set! wouldn't reach skim--wrap.
+(define skim--no-chop (mutable-vector #f))
 
 ;; Units: #('w pieces len) words (pieces: list of (string . style)),
 ;; #('s string style) breakable space, 'nl forced break, #('a id) anchor.
@@ -358,7 +360,7 @@
                       (sp (if pending (string-length (car pending)) 0)))
                  (cond
                    ((null? line)
-                    (if (and (> len width) (not skim--no-chop))
+                    (if (and (> len width) (not (vector-ref skim--no-chop 0)))
                         (let* ((chunks (skim--chop-pieces pieces width))
                                (out (let add ((cs chunks) (out out) (anchors anchors))
                                       (if (null? (cdr cs))
