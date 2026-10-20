@@ -4,6 +4,17 @@ A text web browser for the [macros](https://github.com/macros-app/macros)
 editor, written entirely in Steel. Think Emacs's `eww`, but it tries much harder
 to render pages the way a real browser lays them out.
 
+<table>
+  <tr>
+    <td><img src="screenshots/hn.png" alt="Hacker News in skim" width="480"></td>
+    <td><img src="screenshots/lobsters.png" alt="Lobsters in skim" width="480"></td>
+  </tr>
+  <tr>
+    <td align="center">Hacker News</td>
+    <td align="center">Lobsters</td>
+  </tr>
+</table>
+
 - **HTML5-ish parser.** Implied end tags (`<p>`, `<li>`, table parts, …),
   character references, and `<script>`/`<svg>` stripped. It's built on native
   regex passes and one `split-many`, so a 400 KB Wikipedia article parses in
@@ -51,9 +62,12 @@ No JavaScript, by design.
 ## Install
 
 ```scheme
-(package-install-local "~/repos/skim")   ; or package-install with a git URL
+(package-install "https://github.com/macros-app/skim")
 (evil-leader-set "m e" 'skim)             ; optional
 ```
+
+For a local checkout you're hacking on, use
+`(package-install-local "~/repos/skim")` instead.
 
 ## Use
 
